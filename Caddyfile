@@ -1,0 +1,15 @@
+{
+    admin off
+}
+
+:443 {
+    tls internal
+
+    reverse_proxy 127.0.0.1:8080 {
+        flush_interval -1
+    }
+}
+
+:80 {
+    redir https://{host}{uri}
+}

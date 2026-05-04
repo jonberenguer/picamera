@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#0a0a0a"/>
+  <!-- Camera body -->
+  <rect x="72" y="176" width="368" height="232" rx="36" fill="#1e1e1e"/>
+  <!-- Viewfinder bump -->
+  <rect x="180" y="128" width="152" height="64" rx="20" fill="#1e1e1e"/>
+  <!-- Lens rings -->
+  <circle cx="256" cy="292" r="88" fill="#161616"/>
+  <circle cx="256" cy="292" r="64" fill="#0a0a0a"/>
+  <circle cx="256" cy="292" r="40" fill="#22d3ee" opacity="0.2"/>
+  <circle cx="256" cy="292" r="22" fill="#22d3ee"/>
+  <!-- Pan arrows -->
+  <path d="M108 292 L80 272 L80 312 Z" fill="#22d3ee" opacity="0.45"/>
+  <path d="M404 292 L432 272 L432 312 Z" fill="#22d3ee" opacity="0.45"/>
+</svg>

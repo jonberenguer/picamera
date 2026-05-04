@@ -1,0 +1,1102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0a0a0a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="PiCam">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="/static/icon.svg">
+  <title>PiCam Controller</title>
+  <style>
+    :root {
+      --bg:          #0a0a0a;
+      --surface:     #161616;
+      --surface-hi:  #1e1e1e;
+      --border:      #272727;
+      --accent:      #22d3ee;
+      --accent-glow: rgba(34,211,238,0.18);
+      --accent-dim:  rgba(34,211,238,0.08);
+      --text:        #e5e5e5;
+      --text-muted:  #5a5a5a;
+      --danger:      #f87171;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Header ─────────────────────────────────────────── */
+    header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 14px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .live-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 7px var(--accent);
+      animation: blink 2.4s ease-in-out infinite;
+      flex-shrink: 0;
+    }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+    header h1 {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+
+    .spacer { flex: 1; }
+
+    .icon-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      color: var(--text-muted);
+      width: 32px; height: 32px;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer;
+      transition: border-color 0.12s, color 0.12s, background 0.12s;
+      flex-shrink: 0;
+    }
+    .icon-btn:hover  { border-color: var(--accent); color: var(--accent); }
+    .icon-btn:active { background: var(--accent-dim); }
+    .icon-btn.scanning {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: var(--accent-dim);
+      animation: scan-pulse 1.4s ease-in-out infinite;
+    }
+    @keyframes scan-pulse {
+      0%,100% { box-shadow: 0 0 0 0 rgba(34,211,238,0.4); }
+      50%      { box-shadow: 0 0 0 5px rgba(34,211,238,0); }
+    }
+
+    .hw-badge {
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 3px 8px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+
+    .motion-badge {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 3px 8px;
+      border-radius: 4px;
+      border: 1px solid transparent;
+      color: var(--danger);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.5s;
+      flex-shrink: 0;
+    }
+    .motion-badge.active {
+      opacity: 1;
+      border-color: rgba(248,113,113,0.3);
+      background: rgba(248,113,113,0.08);
+      animation: motion-pulse 0.7s ease-out 2;
+    }
+    .motion-dot {
+      width: 5px; height: 5px;
+      border-radius: 50%;
+      background: var(--danger);
+      flex-shrink: 0;
+    }
+    @keyframes motion-pulse {
+      0%   { box-shadow: 0 0 0 0 rgba(248,113,113,0.6); }
+      100% { box-shadow: 0 0 0 8px rgba(248,113,113,0); }
+    }
+
+    /* ── Camera feed ─────────────────────────────────────── */
+    .feed-wrap {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #000;
+      overflow: hidden;
+      position: relative;
+      cursor: grab;
+    }
+    .feed-wrap.dragging { cursor: grabbing; }
+
+    .feed-wrap img {
+      max-width: 100%;
+      max-height: 100%;
+      display: block;
+      object-fit: contain;
+      pointer-events: none;
+      user-select: none;
+      transform-origin: center;
+      transition: transform 0.2s ease;
+    }
+
+    .drag-hint {
+      position: absolute;
+      bottom: 10px; left: 50%;
+      transform: translateX(-50%);
+      font-size: 10px;
+      color: rgba(255,255,255,0.25);
+      letter-spacing: 0.06em;
+      pointer-events: none;
+      transition: opacity 0.4s;
+    }
+
+    .feed-offline {
+      position: absolute; inset: 0;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 10px;
+      color: var(--text-muted);
+      font-size: 13px;
+      pointer-events: none;
+    }
+    .feed-offline svg { opacity: 0.3; }
+
+    /* ── Controls ────────────────────────────────────────── */
+    .controls {
+      flex-shrink: 0;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      padding: 12px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+    }
+
+    /* D-pad */
+    .dpad {
+      display: grid;
+      grid-template-columns: repeat(3, 52px);
+      grid-template-rows: repeat(3, 52px);
+      gap: 5px;
+    }
+
+    .dpad-btn {
+      background: var(--surface-hi);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text-muted);
+      font-size: 17px;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: background 0.1s, border-color 0.1s, color 0.1s, transform 0.08s, box-shadow 0.1s;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
+    }
+    .dpad-btn:hover  { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+    .dpad-btn:active,
+    .dpad-btn.pressed {
+      background: var(--accent-glow);
+      border-color: var(--accent);
+      color: var(--accent);
+      box-shadow: 0 0 10px var(--accent-glow);
+      transform: scale(0.90);
+    }
+    .dpad-btn.up    { grid-column:2; grid-row:1; }
+    .dpad-btn.left  { grid-column:1; grid-row:2; }
+    .dpad-btn.right { grid-column:3; grid-row:2; }
+    .dpad-btn.down  { grid-column:2; grid-row:3; }
+    .dpad-center    { grid-column:2; grid-row:2; display:flex; align-items:center; justify-content:center; }
+    .dpad-center-dot { width:5px; height:5px; border-radius:50%; background:var(--border); }
+
+    /* Step selector */
+    .step-group {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .step-label {
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      text-align: center;
+    }
+    .step-btns { display: flex; gap: 4px; }
+    .step-btn {
+      background: var(--surface-hi);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text-muted);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      padding: 5px 9px;
+      cursor: pointer;
+      transition: background 0.1s, border-color 0.1s, color 0.1s;
+      white-space: nowrap;
+    }
+    .step-btn:hover   { border-color: var(--accent); color: var(--accent); }
+    .step-btn.active  { background: var(--accent-glow); border-color: var(--accent); color: var(--accent); }
+
+    /* Position display */
+    .position {
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+      min-width: 120px;
+    }
+    .pos-row { display: flex; flex-direction: column; gap: 3px; }
+    .pos-header { display: flex; justify-content: space-between; align-items: baseline; }
+    .pos-label {
+      font-size: 9px; font-weight: 600;
+      letter-spacing: 0.13em; text-transform: uppercase;
+      color: var(--text-muted);
+    }
+    .pos-value { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--accent); min-width: 36px; text-align: right; }
+    .pos-track {
+      height: 3px; background: var(--border); border-radius: 2px; position: relative;
+    }
+    .pos-track::after {
+      content:''; position:absolute; left:50%; top:-2px; bottom:-2px;
+      width:1px; background:var(--surface-hi); transform:translateX(-50%);
+    }
+    .pos-fill {
+      position:absolute; top:0; bottom:0;
+      background: var(--accent); border-radius:2px;
+      transition: left 0.16s ease, width 0.16s ease;
+    }
+
+    /* ── Presets bar ─────────────────────────────────────── */
+    .presets-bar {
+      flex-shrink: 0;
+      background: var(--bg);
+      border-top: 1px solid var(--border);
+      padding: 8px 18px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .presets-bar::-webkit-scrollbar { display: none; }
+
+    .preset-save {
+      display: flex;
+      gap: 5px;
+      flex-shrink: 0;
+    }
+    .preset-input {
+      background: var(--surface-hi);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 11px;
+      padding: 5px 9px;
+      width: 110px;
+      outline: none;
+      transition: border-color 0.12s;
+    }
+    .preset-input:focus { border-color: var(--accent); }
+    .preset-input::placeholder { color: var(--text-muted); }
+
+    .save-btn {
+      background: var(--surface-hi);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text-muted);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      padding: 5px 10px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: border-color 0.12s, color 0.12s;
+      flex-shrink: 0;
+    }
+    .save-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    .preset-divider {
+      width: 1px; height: 22px;
+      background: var(--border);
+      flex-shrink: 0;
+    }
+
+    .preset-list {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .preset-chip {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      background: var(--surface-hi);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+      flex-shrink: 0;
+      transition: border-color 0.12s;
+    }
+    .preset-chip:hover { border-color: var(--accent); }
+
+    .preset-go {
+      background: transparent;
+      border: none;
+      color: var(--text);
+      font-size: 11px;
+      padding: 5px 10px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: color 0.12s;
+    }
+    .preset-go:hover { color: var(--accent); }
+
+    .preset-del {
+      background: transparent;
+      border: none;
+      border-left: 1px solid var(--border);
+      color: var(--text-muted);
+      font-size: 13px;
+      line-height: 1;
+      padding: 4px 7px;
+      cursor: pointer;
+      transition: color 0.12s, background 0.12s;
+    }
+    .preset-del:hover { color: var(--danger); background: rgba(248,113,113,0.08); }
+
+    .no-presets {
+      font-size: 10px;
+      color: var(--text-muted);
+      font-style: italic;
+    }
+
+    /* ── Live dot states ─────────────────────────────────── */
+    .live-dot.disconnected {
+      background: var(--text-muted);
+      box-shadow: none;
+      animation: none;
+    }
+
+    /* ── Zoom controls ───────────────────────────────────── */
+    .zoom-controls {
+      position: absolute;
+      right: 10px; bottom: 40px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      z-index: 5;
+    }
+    .zoom-btn {
+      background: rgba(22,22,22,0.75);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text-muted);
+      width: 28px; height: 28px;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer;
+      font-size: 16px; line-height: 1;
+      backdrop-filter: blur(6px);
+      transition: color 0.1s, border-color 0.1s;
+      user-select: none;
+    }
+    .zoom-btn:hover { color: var(--accent); border-color: var(--accent); }
+    .zoom-level {
+      font-size: 9px; font-weight: 700;
+      letter-spacing: 0.04em;
+      color: var(--text-muted);
+    }
+
+    /* ── Gallery overlay ─────────────────────────────────── */
+    .gallery-overlay {
+      position: fixed; inset: 0;
+      background: rgba(10,10,10,0.97);
+      z-index: 200;
+      display: flex; flex-direction: column;
+      opacity: 0; pointer-events: none;
+      transition: opacity 0.18s;
+    }
+    .gallery-overlay.open { opacity: 1; pointer-events: all; }
+
+    .gallery-hdr {
+      display: flex; align-items: center;
+      padding: 9px 14px;
+      border-bottom: 1px solid var(--border);
+      gap: 10px;
+      flex-shrink: 0;
+      background: var(--surface);
+    }
+    .gallery-hdr-title {
+      font-size: 11px; font-weight: 600;
+      letter-spacing: 0.14em; text-transform: uppercase;
+      color: var(--text-muted);
+    }
+
+    .gallery-grid {
+      flex: 1; overflow-y: auto;
+      padding: 14px;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 10px;
+      align-content: start;
+    }
+    .gallery-thumb {
+      aspect-ratio: 4/3;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      cursor: pointer;
+      transition: border-color 0.12s;
+    }
+    .gallery-thumb:hover { border-color: var(--accent); }
+    .gallery-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .gallery-empty {
+      flex: 1; display: none;
+      align-items: center; justify-content: center;
+      color: var(--text-muted); font-size: 13px; font-style: italic;
+    }
+    .gallery-viewer {
+      flex: 1; display: none;
+      align-items: center; justify-content: center;
+      overflow: hidden; padding: 14px;
+    }
+    .gallery-viewer img {
+      max-width: 100%; max-height: 100%;
+      object-fit: contain; border-radius: 6px;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="live-dot" id="live-dot"></div>
+  <h1>PiCam Controller</h1>
+  <div class="spacer"></div>
+  <div class="motion-badge" id="motion-badge">
+    <div class="motion-dot"></div>
+    Motion
+  </div>
+  <button class="icon-btn" id="scan-btn" title="Auto-scan">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M5 12h14M12 5l7 7-7 7"/>
+    </svg>
+  </button>
+  <button class="icon-btn" id="gallery-btn" title="Motion gallery">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+      <rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+    </svg>
+  </button>
+  <button class="icon-btn" id="snapshot-btn" title="Save snapshot">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/>
+      <circle cx="12" cy="13" r="4"/>
+    </svg>
+  </button>
+  <button class="icon-btn" id="home-btn" title="Go to home position">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>
+      <polyline points="9 22 9 12 15 12 15 22"/>
+    </svg>
+  </button>
+  <button class="icon-btn" id="fullscreen-btn" title="Fullscreen">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/>
+    </svg>
+  </button>
+  <span class="hw-badge" id="hw-badge">checking…</span>
+  <a href="/logout" class="icon-btn" title="Sign out" style="text-decoration:none">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/>
+      <polyline points="16 17 21 12 16 7"/>
+      <line x1="21" y1="12" x2="9" y2="12"/>
+    </svg>
+  </a>
+</header>
+
+<div class="feed-wrap" id="feed-wrap">
+  <img id="feed" src="/stream" alt="">
+  <div class="drag-hint" id="drag-hint">drag to pan &amp; tilt</div>
+  <div class="zoom-controls">
+    <button class="zoom-btn" id="zoom-in-btn" title="Zoom in">+</button>
+    <div class="zoom-level" id="zoom-level">1×</div>
+    <button class="zoom-btn" id="zoom-out-btn" title="Zoom out">−</button>
+  </div>
+  <div class="feed-offline" id="offline-msg" style="display:none">
+    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+      <path d="M15 10l4.553-2.276A1 1 0 0121 8.723v6.554a1 1 0 01-1.447.894L15 14M3 8a2 2 0 012-2h10a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z"/>
+      <line x1="3" y1="3" x2="21" y2="21"/>
+    </svg>
+    No camera signal
+  </div>
+</div>
+
+<div class="controls">
+
+  <div class="dpad">
+    <button class="dpad-btn up"    data-dir="up"    title="Tilt up (↑)">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 3L14 11H2z"/></svg>
+    </button>
+    <button class="dpad-btn left"  data-dir="left"  title="Pan left (←)">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M3 8L11 2v12z"/></svg>
+    </button>
+    <div class="dpad-center"><div class="dpad-center-dot"></div></div>
+    <button class="dpad-btn right" data-dir="right" title="Pan right (→)">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M13 8L5 14V2z"/></svg>
+    </button>
+    <button class="dpad-btn down"  data-dir="down"  title="Tilt down (↓)">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 13L2 5h12z"/></svg>
+    </button>
+  </div>
+
+  <div class="step-group">
+    <span class="step-label">Speed</span>
+    <div class="step-btns">
+      <button class="step-btn" data-step="2">Fine</button>
+      <button class="step-btn active" data-step="5">Normal</button>
+      <button class="step-btn" data-step="15">Fast</button>
+    </div>
+  </div>
+
+  <div class="position">
+    <div class="pos-row">
+      <div class="pos-header">
+        <span class="pos-label">Pan</span>
+        <span class="pos-value" id="pan-val">0°</span>
+      </div>
+      <div class="pos-track"><div class="pos-fill" id="pan-fill"></div></div>
+    </div>
+    <div class="pos-row">
+      <div class="pos-header">
+        <span class="pos-label">Tilt</span>
+        <span class="pos-value" id="tilt-val">0°</span>
+      </div>
+      <div class="pos-track"><div class="pos-fill" id="tilt-fill"></div></div>
+    </div>
+  </div>
+
+</div>
+
+<div class="presets-bar">
+  <div class="preset-save">
+    <input class="preset-input" id="preset-name" type="text" placeholder="Preset name…" maxlength="24">
+    <button class="save-btn" id="preset-save-btn">Save</button>
+  </div>
+  <div class="preset-divider"></div>
+  <div class="preset-list" id="preset-list"></div>
+</div>
+
+<div class="gallery-overlay" id="gallery-overlay">
+  <div class="gallery-hdr">
+    <button class="icon-btn" id="gallery-back-btn" title="Back to grid" style="display:none">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M19 12H5M12 5l-7 7 7 7"/>
+      </svg>
+    </button>
+    <span class="gallery-hdr-title" id="gallery-hdr-title">Gallery</span>
+    <div class="spacer"></div>
+    <a class="icon-btn" id="gallery-dl-btn" title="Download" style="display:none" download>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+        <polyline points="7 10 12 15 17 10"/>
+        <line x1="12" y1="15" x2="12" y2="3"/>
+      </svg>
+    </a>
+    <button class="icon-btn" id="gallery-close-btn" title="Close gallery">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+      </svg>
+    </button>
+  </div>
+  <div class="gallery-grid" id="gallery-grid"></div>
+  <div class="gallery-empty" id="gallery-empty">No motion captures yet</div>
+  <div class="gallery-viewer" id="gallery-viewer">
+    <img id="gallery-viewer-img" src="" alt="">
+  </div>
+</div>
+
+<script>
+  let currentStep = 5;
+  let busy        = false;
+  let scanActive  = false;
+  let limits      = { pan: { min: -90, max: 90 }, tilt: { min: -90, max: 90 } };
+
+  // ── Position display ──────────────────────────────────────────────────────
+  function updatePosition(pan, tilt) {
+    document.getElementById('pan-val').textContent  = pan  + '°';
+    document.getElementById('tilt-val').textContent = tilt + '°';
+    setBar('pan-fill',  pan,  limits.pan.min,  limits.pan.max);
+    setBar('tilt-fill', tilt, limits.tilt.min, limits.tilt.max);
+  }
+
+  function setBar(id, value, min, max) {
+    const fill   = document.getElementById(id);
+    const range  = max - min;
+    const center = ((0 - min) / range) * 100;
+    const pct    = ((value - min) / range) * 100;
+    if (pct >= center) {
+      fill.style.left  = center + '%';
+      fill.style.width = (pct - center) + '%';
+    } else {
+      fill.style.left  = pct + '%';
+      fill.style.width = (center - pct) + '%';
+    }
+  }
+
+  // ── Server-Sent Events — position + motion ────────────────────────────────
+  let motionTimer = null;
+
+  function showMotionBadge() {
+    const badge = document.getElementById('motion-badge');
+    badge.classList.remove('active');
+    void badge.offsetWidth;           // restart animation
+    badge.classList.add('active');
+    clearTimeout(motionTimer);
+    motionTimer = setTimeout(() => badge.classList.remove('active'), 10000);
+  }
+
+  function connectSSE() {
+    const liveDot = document.getElementById('live-dot');
+    const es = new EventSource('/events');
+    es.onopen = () => liveDot.classList.remove('disconnected');
+    es.onmessage = e => {
+      liveDot.classList.remove('disconnected');
+      const d = JSON.parse(e.data);
+      updatePosition(d.pan, d.tilt);
+    };
+    es.addEventListener('motion', () => showMotionBadge());
+    es.onerror = () => {
+      liveDot.classList.add('disconnected');
+      es.close();
+      setTimeout(connectSSE, 3000);
+    };
+  }
+
+  // ── Scan ──────────────────────────────────────────────────────────────────
+  function setScanUI(active) {
+    scanActive = active;
+    const btn = document.getElementById('scan-btn');
+    btn.classList.toggle('scanning', active);
+    btn.title = active ? 'Stop scan' : 'Auto-scan';
+  }
+
+  document.getElementById('scan-btn').addEventListener('click', async () => {
+    const next = !scanActive;
+    setScanUI(next);
+    try {
+      const res = await fetch('/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: next })
+      });
+      if (!res.ok) setScanUI(!next);
+    } catch(_) { setScanUI(!next); }
+  });
+
+  // ── Move ──────────────────────────────────────────────────────────────────
+  async function move(direction, step) {
+    if (scanActive) setScanUI(false);
+    if (busy) return;
+    busy = true;
+    const btn = document.querySelector(`.dpad-btn[data-dir="${direction}"]`);
+    if (btn) btn.classList.add('pressed');
+    try {
+      await fetch('/move', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ direction, step: step ?? currentStep })
+      });
+    } catch (_) {}
+    if (btn) btn.classList.remove('pressed');
+    busy = false;
+  }
+
+  async function goTo(pan, tilt) {
+    if (scanActive) setScanUI(false);
+    try {
+      await fetch('/goto', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pan, tilt })
+      });
+    } catch (_) {}
+  }
+
+  // ── Home ──────────────────────────────────────────────────────────────────
+  document.getElementById('home-btn').addEventListener('click', async () => {
+    if (scanActive) setScanUI(false);
+    try { await fetch('/home', { method: 'POST' }); } catch (_) {}
+  });
+
+  // ── Snapshot ──────────────────────────────────────────────────────────────
+  document.getElementById('snapshot-btn').addEventListener('click', () => {
+    const a = document.createElement('a');
+    a.href = '/snapshot';
+    a.click();
+  });
+
+  // ── D-pad hold-to-accelerate ──────────────────────────────────────────────
+  const HOLD_DELAY    = 350;   // ms before auto-repeat starts
+  const HOLD_INTERVAL = 100;   // ms between repeat steps
+
+  let holdDir   = null;
+  let holdStart = 0;
+  let holdTimer = null;
+
+  function accelStep() {
+    const ms = Date.now() - holdStart;
+    if (ms > 1500) return Math.min(currentStep * 3, 90);
+    if (ms > 700)  return Math.min(currentStep * 2, 90);
+    return currentStep;
+  }
+
+  async function fireHold(initial) {
+    if (!holdDir) return;
+    await move(holdDir, accelStep());
+    if (holdDir) holdTimer = setTimeout(() => fireHold(false), initial ? HOLD_DELAY : HOLD_INTERVAL);
+  }
+
+  function startHold(dir) {
+    stopHold();
+    holdDir   = dir;
+    holdStart = Date.now();
+    fireHold(true);
+  }
+
+  function stopHold() {
+    holdDir = null;
+    clearTimeout(holdTimer);
+    holdTimer = null;
+  }
+
+  document.querySelectorAll('.dpad-btn[data-dir]').forEach(btn => {
+    btn.addEventListener('pointerdown',  e => { e.preventDefault(); startHold(btn.dataset.dir); });
+    btn.addEventListener('pointerup',    () => stopHold());
+    btn.addEventListener('pointercancel',() => stopHold());
+    btn.addEventListener('pointerleave', () => stopHold());
+  });
+
+  // ── Step selector ─────────────────────────────────────────────────────────
+  document.querySelectorAll('.step-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.step-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentStep = parseInt(btn.dataset.step);
+    });
+  });
+
+  // ── Keyboard ──────────────────────────────────────────────────────────────
+  const keyMap = { ArrowUp:'up', ArrowDown:'down', ArrowLeft:'left', ArrowRight:'right' };
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+      if (scanActive) {
+        setScanUI(false);
+        fetch('/scan', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled:false}) });
+      }
+      stopHold();
+      return;
+    }
+    const dir = keyMap[e.key];
+    if (!dir || e.repeat) return;
+    e.preventDefault();
+    startHold(dir);
+  });
+
+  document.addEventListener('keyup', e => {
+    if (keyMap[e.key]) stopHold();
+  });
+
+  // ── Drag to pan/tilt ──────────────────────────────────────────────────────
+  const feedWrap  = document.getElementById('feed-wrap');
+  const dragHint  = document.getElementById('drag-hint');
+  const PX_PER_STEP = 25;
+  let drag = null;
+
+  feedWrap.addEventListener('pointerdown', e => {
+    if (e.target.closest('button')) return;
+    drag = { lastX: e.clientX, lastY: e.clientY, accX: 0, accY: 0 };
+    feedWrap.setPointerCapture(e.pointerId);
+    feedWrap.classList.add('dragging');
+    dragHint.style.opacity = '0';
+    e.preventDefault();
+  });
+
+  feedWrap.addEventListener('pointermove', e => {
+    if (!drag) return;
+    drag.accX += e.clientX - drag.lastX;
+    drag.accY += e.clientY - drag.lastY;
+    drag.lastX = e.clientX;
+    drag.lastY = e.clientY;
+
+    if (Math.abs(drag.accX) >= PX_PER_STEP) {
+      move(drag.accX > 0 ? 'right' : 'left', currentStep);
+      drag.accX = 0;
+    }
+    if (Math.abs(drag.accY) >= PX_PER_STEP) {
+      move(drag.accY > 0 ? 'down' : 'up', currentStep);
+      drag.accY = 0;
+    }
+  });
+
+  ['pointerup', 'pointercancel'].forEach(ev =>
+    feedWrap.addEventListener(ev, () => {
+      drag = null;
+      feedWrap.classList.remove('dragging');
+    })
+  );
+
+  // ── Fullscreen ────────────────────────────────────────────────────────────
+  const FS_EXPAND   = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/></svg>`;
+  const FS_COMPRESS = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3v3a2 2 0 01-2 2H3m18 0h-3a2 2 0 01-2-2V3m0 18v-3a2 2 0 012-2h3M3 16h3a2 2 0 012 2v3"/></svg>`;
+
+  document.getElementById('fullscreen-btn').addEventListener('click', () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(() => {});
+    } else {
+      document.exitFullscreen().catch(() => {});
+    }
+  });
+
+  document.addEventListener('fullscreenchange', () => {
+    const btn = document.getElementById('fullscreen-btn');
+    const inFS = !!document.fullscreenElement;
+    btn.title     = inFS ? 'Exit fullscreen' : 'Fullscreen';
+    btn.innerHTML = inFS ? FS_COMPRESS : FS_EXPAND;
+  });
+
+  // ── Digital zoom ──────────────────────────────────────────────────────────
+  const ZOOM_STEPS = [1, 1.5, 2, 2.5, 3];
+  let zoomIdx = 0;
+
+  function applyZoom() {
+    feed.style.transform = `scale(${ZOOM_STEPS[zoomIdx]})`;
+    document.getElementById('zoom-level').textContent = ZOOM_STEPS[zoomIdx] + '×';
+  }
+
+  document.getElementById('zoom-in-btn').addEventListener('click', () => {
+    if (zoomIdx < ZOOM_STEPS.length - 1) { zoomIdx++; applyZoom(); }
+  });
+  document.getElementById('zoom-out-btn').addEventListener('click', () => {
+    if (zoomIdx > 0) { zoomIdx--; applyZoom(); }
+  });
+
+  // Pinch-to-zoom
+  let pinchDist0 = null, pinchIdx0 = 0;
+  feedWrap.addEventListener('touchstart', e => {
+    if (e.touches.length === 2) {
+      pinchDist0 = Math.hypot(e.touches[0].clientX - e.touches[1].clientX,
+                              e.touches[0].clientY - e.touches[1].clientY);
+      pinchIdx0  = zoomIdx;
+    }
+  }, { passive: true });
+  feedWrap.addEventListener('touchmove', e => {
+    if (pinchDist0 === null || e.touches.length !== 2) return;
+    const dist   = Math.hypot(e.touches[0].clientX - e.touches[1].clientX,
+                              e.touches[0].clientY - e.touches[1].clientY);
+    const target = ZOOM_STEPS[pinchIdx0] * (dist / pinchDist0);
+    let best = 0, bestD = Infinity;
+    ZOOM_STEPS.forEach((z, i) => { const d = Math.abs(z - target); if (d < bestD) { bestD = d; best = i; } });
+    if (best !== zoomIdx) { zoomIdx = best; applyZoom(); }
+  }, { passive: true });
+  feedWrap.addEventListener('touchend', () => { pinchDist0 = null; });
+
+  // ── Gallery ───────────────────────────────────────────────────────────────
+  let galleryFiles = [];
+
+  function openGallery() {
+    document.getElementById('gallery-overlay').classList.add('open');
+    showGalleryGrid();
+    loadGallery();
+  }
+
+  function closeGallery() {
+    document.getElementById('gallery-overlay').classList.remove('open');
+  }
+
+  async function loadGallery() {
+    try {
+      const res = await fetch('/gallery');
+      if (!res.ok) return;
+      galleryFiles = await res.json();
+      renderGalleryGrid();
+    } catch (_) {}
+  }
+
+  function renderGalleryGrid() {
+    const grid  = document.getElementById('gallery-grid');
+    const empty = document.getElementById('gallery-empty');
+    document.getElementById('gallery-hdr-title').textContent = `Gallery (${galleryFiles.length})`;
+    if (galleryFiles.length === 0) {
+      grid.style.display  = 'none';
+      empty.style.display = 'flex';
+      return;
+    }
+    grid.style.display  = '';
+    empty.style.display = 'none';
+    grid.innerHTML = galleryFiles.map(n => `
+      <div class="gallery-thumb" data-name="${n.replace(/"/g,'&quot;')}">
+        <img src="/gallery/${encodeURIComponent(n)}" loading="lazy" alt="">
+      </div>
+    `).join('');
+    grid.querySelectorAll('.gallery-thumb').forEach(t =>
+      t.addEventListener('click', () => showGalleryImage(t.dataset.name))
+    );
+  }
+
+  function showGalleryGrid() {
+    document.getElementById('gallery-grid').style.display    = '';
+    document.getElementById('gallery-empty').style.display   = 'none';
+    document.getElementById('gallery-viewer').style.display  = 'none';
+    document.getElementById('gallery-back-btn').style.display = 'none';
+    document.getElementById('gallery-dl-btn').style.display   = 'none';
+    document.getElementById('gallery-hdr-title').textContent  = `Gallery (${galleryFiles.length})`;
+  }
+
+  function showGalleryImage(name) {
+    document.getElementById('gallery-grid').style.display    = 'none';
+    document.getElementById('gallery-empty').style.display   = 'none';
+    document.getElementById('gallery-viewer').style.display  = 'flex';
+    document.getElementById('gallery-back-btn').style.display = '';
+    const dl = document.getElementById('gallery-dl-btn');
+    dl.style.display = '';
+    dl.href = `/gallery/${encodeURIComponent(name)}`;
+    dl.setAttribute('download', name);
+    document.getElementById('gallery-hdr-title').textContent  = name;
+    document.getElementById('gallery-viewer-img').src = `/gallery/${encodeURIComponent(name)}`;
+  }
+
+  document.getElementById('gallery-btn').addEventListener('click', openGallery);
+  document.getElementById('gallery-close-btn').addEventListener('click', closeGallery);
+  document.getElementById('gallery-back-btn').addEventListener('click', showGalleryGrid);
+  document.getElementById('gallery-overlay').addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeGallery();
+  });
+
+  // ── Presets ───────────────────────────────────────────────────────────────
+  let presetsData = {};
+
+  function renderPresets() {
+    const list  = document.getElementById('preset-list');
+    const names = Object.keys(presetsData);
+    if (names.length === 0) {
+      list.innerHTML = '<span class="no-presets">No presets saved yet</span>';
+      return;
+    }
+    list.innerHTML = names.map(name => `
+      <div class="preset-chip">
+        <button class="preset-go" data-name="${name}">${name}</button>
+        <button class="preset-del" data-name="${name}" title="Delete">×</button>
+      </div>
+    `).join('');
+
+    list.querySelectorAll('.preset-go').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const pos = presetsData[btn.dataset.name];
+        if (pos) goTo(pos.pan, pos.tilt);
+      });
+    });
+
+    list.querySelectorAll('.preset-del').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        try {
+          const res = await fetch(`/presets/${encodeURIComponent(btn.dataset.name)}`, { method: 'DELETE' });
+          if (res.ok) { presetsData = await res.json(); renderPresets(); }
+        } catch (_) {}
+      });
+    });
+  }
+
+  document.getElementById('preset-save-btn').addEventListener('click', async () => {
+    const name = document.getElementById('preset-name').value.trim();
+    if (!name) return;
+    try {
+      const res = await fetch('/presets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name })
+      });
+      if (res.ok) {
+        presetsData = await res.json();
+        renderPresets();
+        document.getElementById('preset-name').value = '';
+      }
+    } catch (_) {}
+  });
+
+  document.getElementById('preset-name').addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('preset-save-btn').click();
+  });
+
+  // ── Init ──────────────────────────────────────────────────────────────────
+  async function init() {
+    try {
+      const [limRes, posRes, presetsRes] = await Promise.all([
+        fetch('/limits'), fetch('/position'), fetch('/presets')
+      ]);
+      if (limRes.ok)     limits = await limRes.json();
+      if (posRes.ok) {
+        const d = await posRes.json();
+        updatePosition(d.pan, d.tilt);
+        if (d.scan) setScanUI(true);
+        document.getElementById('hw-badge').textContent = d.hardware ? 'HAT ready' : 'no HAT';
+      }
+      if (presetsRes.ok) { presetsData = await presetsRes.json(); renderPresets(); }
+    } catch (_) {}
+
+    setTimeout(() => { dragHint.style.opacity = '0'; }, 4000);
+    connectSSE();
+  }
+
+  // ── Stream error handling ─────────────────────────────────────────────────
+  const feed       = document.getElementById('feed');
+  const offlineMsg = document.getElementById('offline-msg');
+
+  feed.addEventListener('error', () => {
+    offlineMsg.style.display = 'flex';
+    feed.style.display = 'none';
+    setTimeout(() => {
+      feed.src = '/stream?' + Date.now();
+      feed.style.display = '';
+      offlineMsg.style.display = 'none';
+    }, 3000);
+  });
+
+  // ── Service worker ────────────────────────────────────────────────────────
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+
+  init();
+</script>
+
+</body>
+</html>

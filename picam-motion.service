@@ -1,0 +1,12 @@
+[Unit]
+Description=PiCam Motion Daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/libcamerify /usr/bin/motion -n -d1 -c /etc/motion/motion.conf
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

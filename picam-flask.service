@@ -1,0 +1,16 @@
+[Unit]
+Description=PiCam Flask Controller
+After=network.target picam-motion.service
+Wants=picam-motion.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/picam
+ExecStart=/opt/picam/venv/bin/python3 /opt/picam/app.py
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=/etc/picam.env
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

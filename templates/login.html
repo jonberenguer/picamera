@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0a0a0a">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="/static/icon.svg">
+  <title>PiCam — Sign In</title>
+  <style>
+    :root {
+      --bg:         #0a0a0a;
+      --surface:    #161616;
+      --surface-hi: #1e1e1e;
+      --border:     #272727;
+      --accent:     #22d3ee;
+      --accent-dim: rgba(34,211,238,0.08);
+      --text:       #e5e5e5;
+      --text-muted: #5a5a5a;
+      --danger:     #f87171;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      min-height: 100dvh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 36px 32px;
+      width: 100%;
+      max-width: 340px;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    .brand {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand-icon {
+      width: 44px; height: 44px;
+      background: var(--accent-dim);
+      border: 1px solid rgba(34,211,238,0.2);
+      border-radius: 12px;
+      display: flex; align-items: center; justify-content: center;
+      color: var(--accent);
+    }
+
+    .brand h1 {
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text);
+    }
+
+    .brand p {
+      font-size: 11px;
+      color: var(--text-muted);
+      letter-spacing: 0.04em;
+    }
+
+    form {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    label {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+
+    input[type="text"],
+    input[type="password"] {
+      background: var(--surface-hi);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 13px;
+      padding: 10px 12px;
+      outline: none;
+      width: 100%;
+      transition: border-color 0.15s;
+    }
+
+    input:focus { border-color: var(--accent); }
+    input::placeholder { color: var(--text-muted); }
+
+    .error {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      background: rgba(248,113,113,0.08);
+      border: 1px solid rgba(248,113,113,0.25);
+      border-radius: 8px;
+      padding: 9px 12px;
+      font-size: 12px;
+      color: var(--danger);
+    }
+
+    .submit-btn {
+      background: var(--accent);
+      border: none;
+      border-radius: 8px;
+      color: #000;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 11px;
+      cursor: pointer;
+      width: 100%;
+      margin-top: 4px;
+      transition: opacity 0.15s, transform 0.08s;
+    }
+
+    .submit-btn:hover  { opacity: 0.88; }
+    .submit-btn:active { transform: scale(0.98); }
+  </style>
+</head>
+<body>
+
+<div class="card">
+
+  <div class="brand">
+    <div class="brand-icon">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/>
+        <circle cx="12" cy="13" r="4"/>
+      </svg>
+    </div>
+    <h1>PiCam</h1>
+    <p>Sign in to continue</p>
+  </div>
+
+  {% if error %}
+  <div class="error">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+      <circle cx="12" cy="12" r="10"/>
+      <line x1="12" y1="8" x2="12" y2="12"/>
+      <line x1="12" y1="16" x2="12.01" y2="16"/>
+    </svg>
+    {{ error }}
+  </div>
+  {% endif %}
+
+  <form method="POST" action="/login">
+    <div class="field">
+      <label for="username">Username</label>
+      <input type="text" id="username" name="username" placeholder="Enter username"
+             autocomplete="username" autofocus required>
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" placeholder="Enter password"
+             autocomplete="current-password" required>
+    </div>
+    <button type="submit" class="submit-btn">Sign In</button>
+  </form>
+
+</div>
+
+</body>
+</html>
