@@ -297,105 +297,97 @@
       flex-shrink: 0;
       background: var(--bg);
       border-top: 1px solid var(--border);
-      padding: 8px 18px;
-      display: flex;
-      align-items: center;
-      gap: 10px;
+      padding: 8px 14px;
       overflow-x: auto;
       scrollbar-width: none;
     }
     .presets-bar::-webkit-scrollbar { display: none; }
 
-    .preset-save {
+    .presets-slots {
       display: flex;
+      gap: 8px;
+      min-width: max-content;
+    }
+
+    .preset-slot {
+      background: var(--surface-hi);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 7px 10px;
+      display: flex;
+      flex-direction: column;
       gap: 5px;
-      flex-shrink: 0;
-    }
-    .preset-input {
-      background: var(--surface-hi);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      color: var(--text);
-      font-size: 11px;
-      padding: 5px 9px;
-      width: 110px;
-      outline: none;
+      min-width: 90px;
+      width: calc((100vw - 28px - 24px) / 4);
+      max-width: 160px;
       transition: border-color 0.12s;
     }
-    .preset-input:focus { border-color: var(--accent); }
-    .preset-input::placeholder { color: var(--text-muted); }
+    .preset-slot.filled { border-color: rgba(34,211,238,0.3); }
 
-    .save-btn {
-      background: var(--surface-hi);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      color: var(--text-muted);
-      font-size: 10px;
-      font-weight: 600;
-      letter-spacing: 0.05em;
-      padding: 5px 10px;
-      cursor: pointer;
-      white-space: nowrap;
-      transition: border-color 0.12s, color 0.12s;
-      flex-shrink: 0;
-    }
-    .save-btn:hover { border-color: var(--accent); color: var(--accent); }
-
-    .preset-divider {
-      width: 1px; height: 22px;
-      background: var(--border);
-      flex-shrink: 0;
-    }
-
-    .preset-list {
+    .slot-header {
       display: flex;
-      gap: 6px;
+      justify-content: space-between;
       align-items: center;
     }
-
-    .preset-chip {
-      display: flex;
-      align-items: center;
-      gap: 0;
-      background: var(--surface-hi);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      overflow: hidden;
-      flex-shrink: 0;
-      transition: border-color 0.12s;
-    }
-    .preset-chip:hover { border-color: var(--accent); }
-
-    .preset-go {
-      background: transparent;
-      border: none;
-      color: var(--text);
-      font-size: 11px;
-      padding: 5px 10px;
-      cursor: pointer;
-      white-space: nowrap;
-      transition: color 0.12s;
-    }
-    .preset-go:hover { color: var(--accent); }
-
-    .preset-del {
-      background: transparent;
-      border: none;
-      border-left: 1px solid var(--border);
+    .slot-label {
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
       color: var(--text-muted);
+    }
+    .slot-clear {
+      background: transparent;
+      border: none;
+      color: transparent;
       font-size: 13px;
       line-height: 1;
-      padding: 4px 7px;
-      cursor: pointer;
-      transition: color 0.12s, background 0.12s;
+      cursor: default;
+      padding: 0 1px;
+      transition: color 0.1s;
     }
-    .preset-del:hover { color: var(--danger); background: rgba(248,113,113,0.08); }
+    .preset-slot.filled .slot-clear {
+      color: var(--text-muted);
+      cursor: pointer;
+    }
+    .preset-slot.filled .slot-clear:hover { color: var(--danger); }
 
-    .no-presets {
+    .slot-pos {
       font-size: 10px;
+      font-variant-numeric: tabular-nums;
       color: var(--text-muted);
       font-style: italic;
+      white-space: nowrap;
+      min-height: 14px;
     }
+    .preset-slot.filled .slot-pos {
+      color: var(--accent);
+      font-style: normal;
+    }
+
+    .slot-btns { display: flex; gap: 4px; }
+
+    .slot-btn {
+      flex: 1;
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 4px 0;
+      cursor: pointer;
+      color: var(--text-muted);
+      transition: background 0.1s, border-color 0.1s, color 0.1s;
+    }
+    .slot-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .slot-btn.go-btn {
+      color: var(--accent);
+      border-color: rgba(34,211,238,0.3);
+    }
+    .slot-btn.go-btn:hover { background: var(--accent-glow); }
+    .slot-btn:disabled { opacity: 0.28; cursor: default; pointer-events: none; }
 
     /* ── Live dot states ─────────────────────────────────── */
     .live-dot.disconnected {
@@ -606,12 +598,7 @@
 </div>
 
 <div class="presets-bar">
-  <div class="preset-save">
-    <input class="preset-input" id="preset-name" type="text" placeholder="Preset name…" maxlength="24">
-    <button class="save-btn" id="preset-save-btn">Save</button>
-  </div>
-  <div class="preset-divider"></div>
-  <div class="preset-list" id="preset-list"></div>
+  <div class="presets-slots" id="presets-slots"></div>
 </div>
 
 <div class="gallery-overlay" id="gallery-overlay">
@@ -1001,60 +988,61 @@
     if (e.key === 'Escape') closeGallery();
   });
 
-  // ── Presets ───────────────────────────────────────────────────────────────
+  // ── Presets (4 fixed slots) ───────────────────────────────────────────────
+  const SLOT_KEYS = ['P1', 'P2', 'P3', 'P4'];
   let presetsData = {};
 
   function renderPresets() {
-    const list  = document.getElementById('preset-list');
-    const names = Object.keys(presetsData);
-    if (names.length === 0) {
-      list.innerHTML = '<span class="no-presets">No presets saved yet</span>';
-      return;
-    }
-    list.innerHTML = names.map(name => `
-      <div class="preset-chip">
-        <button class="preset-go" data-name="${name}">${name}</button>
-        <button class="preset-del" data-name="${name}" title="Delete">×</button>
-      </div>
-    `).join('');
+    const container = document.getElementById('presets-slots');
+    container.innerHTML = SLOT_KEYS.map(key => {
+      const pos    = presetsData[key];
+      const filled = !!pos;
+      const posStr = filled ? `${pos.pan}° / ${pos.tilt}°` : 'not set';
+      return `
+        <div class="preset-slot${filled ? ' filled' : ''}" data-key="${key}">
+          <div class="slot-header">
+            <span class="slot-label">${key}</span>
+            <button class="slot-clear" data-key="${key}" title="Clear preset">×</button>
+          </div>
+          <div class="slot-pos">${posStr}</div>
+          <div class="slot-btns">
+            <button class="slot-btn go-btn" data-key="${key}" ${filled ? '' : 'disabled'}>Go</button>
+            <button class="slot-btn save-btn" data-key="${key}">Save</button>
+          </div>
+        </div>
+      `;
+    }).join('');
 
-    list.querySelectorAll('.preset-go').forEach(btn => {
+    container.querySelectorAll('.go-btn').forEach(btn => {
       btn.addEventListener('click', () => {
-        const pos = presetsData[btn.dataset.name];
+        const pos = presetsData[btn.dataset.key];
         if (pos) goTo(pos.pan, pos.tilt);
       });
     });
 
-    list.querySelectorAll('.preset-del').forEach(btn => {
+    container.querySelectorAll('.save-btn').forEach(btn => {
       btn.addEventListener('click', async () => {
         try {
-          const res = await fetch(`/presets/${encodeURIComponent(btn.dataset.name)}`, { method: 'DELETE' });
+          const res = await fetch('/presets', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: btn.dataset.key })
+          });
+          if (res.ok) { presetsData = await res.json(); renderPresets(); }
+        } catch (_) {}
+      });
+    });
+
+    container.querySelectorAll('.slot-clear').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!presetsData[btn.dataset.key]) return;
+        try {
+          const res = await fetch(`/presets/${encodeURIComponent(btn.dataset.key)}`, { method: 'DELETE' });
           if (res.ok) { presetsData = await res.json(); renderPresets(); }
         } catch (_) {}
       });
     });
   }
-
-  document.getElementById('preset-save-btn').addEventListener('click', async () => {
-    const name = document.getElementById('preset-name').value.trim();
-    if (!name) return;
-    try {
-      const res = await fetch('/presets', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name })
-      });
-      if (res.ok) {
-        presetsData = await res.json();
-        renderPresets();
-        document.getElementById('preset-name').value = '';
-      }
-    } catch (_) {}
-  });
-
-  document.getElementById('preset-name').addEventListener('keydown', e => {
-    if (e.key === 'Enter') document.getElementById('preset-save-btn').click();
-  });
 
   // ── Init ──────────────────────────────────────────────────────────────────
   async function init() {
