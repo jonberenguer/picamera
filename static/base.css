@@ -1,0 +1,17 @@
+/* Design tokens and reset shared by the controller and the login page.
+   Loaded first by both; page-specific rules live in app.css / login.css. */
+
+:root {
+  --bg:          #0a0a0a;
+  --surface:     #161616;
+  --surface-hi:  #1e1e1e;
+  --border:      #272727;
+  --accent:      #22d3ee;
+  --accent-glow: rgba(34,211,238,0.18);
+  --accent-dim:  rgba(34,211,238,0.08);
+  --text:        #e5e5e5;
+  --text-muted:  #5a5a5a;
+  --danger:      #f87171;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }

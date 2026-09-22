@@ -376,9 +376,13 @@ picamera/
 ├── motion.env                    # All tunable settings (camera, pan/tilt, auth, NFS)
 ├── motion-stream-only.env        # Swappable variant — live stream only, nothing saved
 ├── templates/
-│   ├── index.html                # Controller UI
-│   └── login.html                # Authentication page
+│   ├── index.html                # Controller UI — markup only
+│   └── login.html                # Authentication page — markup only
 └── static/
+    ├── base.css                  # Design tokens + reset, shared by both pages
+    ├── app.css                   # Controller styles
+    ├── login.css                 # Login page styles
+    ├── app.js                    # Controller behaviour
     ├── favicon.svg               # Browser tab icon
     ├── icon.svg                  # PWA home screen icon
     ├── manifest.json             # Web app manifest (PWA)
@@ -398,6 +402,10 @@ Files installed on the Pi:
 │   ├── index.html
 │   └── login.html
 └── static/
+    ├── base.css
+    ├── app.css
+    ├── login.css
+    ├── app.js
     ├── favicon.svg
     ├── icon.svg
     ├── manifest.json

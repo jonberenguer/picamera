@@ -1,7 +1,11 @@
-const CACHE = 'picam-v2';
+const CACHE = 'picam-v3';
 
-// Pre-cache the app shell only — no dynamic/camera content
-const SHELL = ['/', '/static/manifest.json', '/static/icon.svg', '/static/favicon.svg'];
+// Pre-cache the app shell only — no dynamic/camera content.
+// The CSS and JS used to be inline in '/', so caching the page was enough;
+// now they are separate files and have to be listed explicitly or an offline
+// load gets the markup with no styles and no behaviour.
+const SHELL = ['/', '/static/manifest.json', '/static/icon.svg', '/static/favicon.svg',
+               '/static/base.css', '/static/app.css', '/static/app.js'];
 
 // Routes that must always go to the network
 const BYPASS = ['/stream', '/snapshot', '/gallery', '/events', '/motion-event', '/move',
@@ -39,6 +43,8 @@ self.addEventListener('fetch', e => {
         caches.open(CACHE).then(c => c.put(e.request, copy));
         return res;
       })
-      .catch(() => caches.match(e.request))
+      // ignoreSearch so a cache-busted '?v=<hash>' URL still matches the
+      // unversioned copy pre-cached above when the network is gone.
+      .catch(() => caches.match(e.request, { ignoreSearch: true }))
   );
 });
