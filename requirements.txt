@@ -1,3 +1,5 @@
 flask>=3.0
 requests>=2.31
-pantilthat>=0.0.7
+# pantilthat is intentionally NOT listed here: it is only useful with the
+# Pan-Tilt HAT, and app.py runs fine without it (fixed-camera mode).
+# install.sh installs it unless PANTILT_ENABLED=off.

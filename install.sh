@@ -203,14 +203,26 @@ if $DRY_RUN; then
     say ""
 fi
 
+# Needed before the package step, but motion.env is not parsed until later
+PANTILT_ENABLED=$(grep -E "^PANTILT_ENABLED=" "$SCRIPT_DIR/motion.env" \
+    | tail -1 | cut -d= -f2 | tr -d '[:space:]' | tr 'A-Z' 'a-z')
+PANTILT_ENABLED="${PANTILT_ENABLED:-auto}"
+if [[ "$PANTILT_ENABLED" == "off" ]]; then
+    say "==> Pan/tilt disabled — installing without I2C support"
+fi
+
 say "==> Installing system packages..."
 run apt-get update -q
 run apt-get install -y \
     libcamera-ipa rpicam-apps-core \
     libcamera-tools libcamera-v4l2 \
     v4l-utils motion \
-    python3 python3-venv python3-smbus i2c-tools nfs-common \
+    python3 python3-venv nfs-common \
     debian-keyring debian-archive-keyring apt-transport-https curl
+
+if [[ "$PANTILT_ENABLED" != "off" ]]; then
+    run apt-get install -y python3-smbus i2c-tools
+fi
 
 say "==> Installing Caddy..."
 if command -v caddy &>/dev/null; then
@@ -232,24 +244,28 @@ fi
 run_ok systemctl stop motion
 run_ok systemctl disable motion
 
-say "==> Enabling I2C..."
-BOOT_CONFIG=""
-for f in /boot/firmware/config.txt /boot/config.txt; do
-    [[ -f "$f" ]] && BOOT_CONFIG="$f" && break
-done
-
-if [[ -n "$BOOT_CONFIG" ]]; then
-    if ! grep -q "^dtparam=i2c_arm=on" "$BOOT_CONFIG"; then
-        append_line "dtparam=i2c_arm=on" "$BOOT_CONFIG"
-        say "    NOTE: I2C enabled in $BOOT_CONFIG — a reboot is required after install."
-        REBOOT_REQUIRED=true
-    fi
+if [[ "$PANTILT_ENABLED" == "off" ]]; then
+    say "==> Skipping I2C (pan/tilt is off)"
 else
-    say "    no Raspberry Pi boot config found — skipping"
-fi
+    say "==> Enabling I2C..."
+    BOOT_CONFIG=""
+    for f in /boot/firmware/config.txt /boot/config.txt; do
+        [[ -f "$f" ]] && BOOT_CONFIG="$f" && break
+    done
 
-run_ok modprobe i2c-dev
-append_line "i2c-dev" /etc/modules
+    if [[ -n "$BOOT_CONFIG" ]]; then
+        if ! grep -q "^dtparam=i2c_arm=on" "$BOOT_CONFIG"; then
+            append_line "dtparam=i2c_arm=on" "$BOOT_CONFIG"
+            say "    NOTE: I2C enabled in $BOOT_CONFIG — a reboot is required after install."
+            REBOOT_REQUIRED=true
+        fi
+    else
+        say "    no Raspberry Pi boot config found — skipping"
+    fi
+
+    run_ok modprobe i2c-dev
+    append_line "i2c-dev" /etc/modules
+fi
 
 say "==> Configuring motion..."
 
@@ -305,7 +321,7 @@ say "==> Writing /etc/picam.env..."
 EXISTING_SECRET=$(grep "^SECRET_KEY=" /etc/picam.env 2>/dev/null || true)
 # Any setting app.py reads must be listed here, or it silently keeps its default
 FLASK_VARS="PAN_START|TILT_START|PAN_MIN|PAN_MAX|TILT_MIN|TILT_MAX|SCAN_SPEED\
-|AUTH_USER|AUTH_PASS|MOTION_TARGET_DIR|GALLERY_LIMIT\
+|AUTH_USER|AUTH_PASS|MOTION_TARGET_DIR|GALLERY_LIMIT|PANTILT_ENABLED\
 |NFS_ENABLED|NFS_MOUNT|NFS_SUBDIR|CAMERA_NAME|BUFFER_HIGH_WATER\
 |UPLOAD_STABLE_AGE|UPLOAD_SWEEP_INTERVAL|UPLOAD_RETRY_MIN|UPLOAD_RETRY_MAX"
 if [[ -n "$EXISTING_SECRET" ]]; then
@@ -411,6 +427,11 @@ say "==> Setting up Python venv..."
 # --system-site-packages lets the venv see python3-smbus, which pantilthat requires
 run python3 -m venv --system-site-packages "$INSTALL_DIR/venv"
 run "$INSTALL_DIR/venv/bin/pip" install --no-cache-dir -r "$INSTALL_DIR/requirements.txt"
+if [[ "$PANTILT_ENABLED" == "off" ]]; then
+    say "    skipping pantilthat (pan/tilt is off)"
+else
+    run "$INSTALL_DIR/venv/bin/pip" install --no-cache-dir "pantilthat>=0.0.7"
+fi
 
 say "==> Installing systemd services..."
 backup_once "$CADDY_CONF"
@@ -453,6 +474,11 @@ say "  Controller UI   : https://${PI_IP}  (accept the self-signed cert warning 
 say "  HTTP redirects  : http://${PI_IP} → https"
 say "  Trust CA cert   : /var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt"
 say "  Capture buffer  : ${MOTION_TARGET_DIR} (tmpfs, ${BUFFER_TMPFS_SIZE:-256M})"
+if [[ "$PANTILT_ENABLED" == "off" ]]; then
+    say "  Pan/tilt        : disabled — fixed camera"
+else
+    say "  Pan/tilt        : ${PANTILT_ENABLED} (HAT detected at runtime; UI adapts either way)"
+fi
 if [[ "$NFS_CONFIGURED" == true ]]; then
     say "  NFS archive     : ${NFS_SERVER}:${NFS_EXPORT} -> ${NFS_MOUNT}/${NFS_SUBDIR}/${CAMERA_NAME:-$(hostname)}"
     say "                    check status at https://${PI_IP}/storage"

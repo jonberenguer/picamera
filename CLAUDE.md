@@ -48,6 +48,8 @@ Data flow:
   that returns live data must be added there**, or the SW will cache it.
 - `static/manifest.json`, `icon.svg`, `favicon.svg` — PWA assets.
 - `motion.env` — the single source of truth for all tunables (pan/tilt, auth, camera, NFS).
+- `requirements.txt` — core deps only. `pantilthat` is deliberately absent: it is useless
+  without the HAT, and `install.sh` pip-installs it unless `PANTILT_ENABLED=off`.
 - `motion-stream-only.env` — a complete swappable alternative to `motion.env` (live stream,
   nothing saved). Any variant must carry **every** section: `install.sh` reads only
   `motion.env`, and a fragment missing `AUTH_USER`/`AUTH_PASS` silently disables the login.
@@ -112,8 +114,16 @@ enqueue pass.
   Presets use a separate `presets_lock`. SSE client set uses `_sse_lock`.
 - All angles are clamped through `clamp()` against the soft limits before reaching the
   hardware. Never write to `pantilthat` outside `_apply()`.
-- `HARDWARE` is `False` when the `pantilthat` import or init fails, so the app runs on a
-  dev machine without a HAT. Preserve that fallback in any new hardware code.
+- **The HAT is optional and that is a supported mode, not a degraded one.** `HARDWARE` is
+  `False` when `PANTILT_ENABLED=off` or the HAT does not answer; the app then runs as a
+  fixed camera. Any new movement route needs `@pantilt_required` (returns `409`) — never
+  report a success that did not reach hardware. Anything that spawns a thread to drive the
+  servos must check `HARDWARE` first, the way `_set_scan()` does.
+- `index()` passes `pantilt=_pantilt_state()` into the template, so the UI decides at
+  render time: `<body class="no-pantilt">` hides the control surface on first paint and
+  `panTiltAvailable` is seeded from Jinja. The nodes are left in the DOM until `init()`
+  removes them, because the script does `getElementById(...).addEventListener(...)` at
+  parse time and would throw on a missing element. Keep that ordering if you add controls.
 - Filenames from the client are always reduced with `Path(filename).name` and
   extension-checked before touching disk (see `gallery_file`). Keep that pattern.
 - The section-banner comments (`# ── Name ───`) in `app.py` and the CSS comment blocks in
