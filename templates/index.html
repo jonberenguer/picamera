@@ -470,6 +470,29 @@
     }
     .gallery-thumb:hover { border-color: var(--accent); }
     .gallery-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+    /* Thumbnails carry where the capture lives and whether it is a movie */
+    .gallery-thumb { position: relative; }
+    .thumb-tag {
+      position: absolute; top: 5px; left: 5px;
+      font-size: 8px; font-weight: 600;
+      letter-spacing: 0.08em; text-transform: uppercase;
+      padding: 2px 5px; border-radius: 3px;
+      background: rgba(0,0,0,0.65); color: var(--text-muted);
+      pointer-events: none;
+    }
+    .thumb-tag.buffer { color: var(--accent); }
+    .thumb-video {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      color: var(--text); pointer-events: none;
+      text-shadow: 0 0 8px rgba(0,0,0,0.8);
+    }
+    .thumb-poster {
+      width: 100%; height: 100%;
+      display: flex; align-items: center; justify-content: center;
+      color: var(--text-muted); font-size: 10px;
+    }
     .gallery-empty {
       flex: 1; display: none;
       align-items: center; justify-content: center;
@@ -479,6 +502,10 @@
       flex: 1; display: none;
       align-items: center; justify-content: center;
       overflow: hidden; padding: 14px;
+    }
+    .gallery-viewer video {
+      max-width: 100%; max-height: 100%;
+      border-radius: 8px;
     }
     .gallery-viewer img {
       max-width: 100%; max-height: 100%;
@@ -524,6 +551,7 @@
       <path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/>
     </svg>
   </button>
+  <span class="hw-badge" id="nas-badge" style="display:none" title="Storage"></span>
   <span class="hw-badge" id="hw-badge">checking…</span>
   <a href="/logout" class="icon-btn" title="Sign out" style="text-decoration:none">
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -627,6 +655,7 @@
   <div class="gallery-empty" id="gallery-empty">No motion captures yet</div>
   <div class="gallery-viewer" id="gallery-viewer">
     <img id="gallery-viewer-img" src="" alt="">
+    <video id="gallery-viewer-video" controls playsinline style="display:none"></video>
   </div>
 </div>
 
@@ -919,6 +948,14 @@
   // ── Gallery ───────────────────────────────────────────────────────────────
   let galleryFiles = [];
 
+  const VIDEO_ICON = `<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M10 8l6 4-6 4z" fill="currentColor"/></svg>`;
+
+  const esc = v => String(v).replace(/[&<>"']/g, c =>
+    ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+
+  // Paths are "<source>/<relative path>" — encode each segment, keep the slashes
+  const mediaUrl = path => '/gallery/' + path.split('/').map(encodeURIComponent).join('/');
+
   function openGallery() {
     document.getElementById('gallery-overlay').classList.add('open');
     showGalleryGrid();
@@ -949,17 +986,25 @@
     }
     grid.style.display  = '';
     empty.style.display = 'none';
-    grid.innerHTML = galleryFiles.map(n => `
-      <div class="gallery-thumb" data-name="${n.replace(/"/g,'&quot;')}">
-        <img src="/gallery/${encodeURIComponent(n)}" loading="lazy" alt="">
-      </div>
-    `).join('');
+    grid.innerHTML = galleryFiles.map((f, i) => {
+      // No poster frames for movies yet — show a play marker instead of
+      // pulling a whole video over the network just to fill a 4:3 tile.
+      const body = f.kind === 'video'
+        ? `<div class="thumb-poster">${esc(f.name)}</div><div class="thumb-video">${VIDEO_ICON}</div>`
+        : `<img src="${esc(mediaUrl(f.path))}" loading="lazy" alt="">`;
+      const tag = f.source === 'buffer' ? '<span class="thumb-tag buffer">pending</span>' : '';
+      return `<div class="gallery-thumb" data-idx="${i}">${body}${tag}</div>`;
+    }).join('');
     grid.querySelectorAll('.gallery-thumb').forEach(t =>
-      t.addEventListener('click', () => showGalleryImage(t.dataset.name))
+      t.addEventListener('click', () => showGalleryItem(Number(t.dataset.idx)))
     );
   }
 
   function showGalleryGrid() {
+    const video = document.getElementById('gallery-viewer-video');
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
     document.getElementById('gallery-grid').style.display    = '';
     document.getElementById('gallery-empty').style.display   = 'none';
     document.getElementById('gallery-viewer').style.display  = 'none';
@@ -968,17 +1013,35 @@
     document.getElementById('gallery-hdr-title').textContent  = `Gallery (${galleryFiles.length})`;
   }
 
-  function showGalleryImage(name) {
+  function showGalleryItem(idx) {
+    const f = galleryFiles[idx];
+    if (!f) return;
+    const url   = mediaUrl(f.path);
+    const img   = document.getElementById('gallery-viewer-img');
+    const video = document.getElementById('gallery-viewer-video');
+
     document.getElementById('gallery-grid').style.display    = 'none';
     document.getElementById('gallery-empty').style.display   = 'none';
     document.getElementById('gallery-viewer').style.display  = 'flex';
     document.getElementById('gallery-back-btn').style.display = '';
     const dl = document.getElementById('gallery-dl-btn');
     dl.style.display = '';
-    dl.href = `/gallery/${encodeURIComponent(name)}`;
-    dl.setAttribute('download', name);
-    document.getElementById('gallery-hdr-title').textContent  = name;
-    document.getElementById('gallery-viewer-img').src = `/gallery/${encodeURIComponent(name)}`;
+    dl.href = url;
+    dl.setAttribute('download', f.name);
+    document.getElementById('gallery-hdr-title').textContent = f.name;
+
+    if (f.kind === 'video') {
+      img.removeAttribute('src');
+      img.style.display   = 'none';
+      video.style.display = '';
+      video.src = url;
+    } else {
+      video.pause();
+      video.removeAttribute('src');
+      video.style.display = 'none';
+      img.style.display   = '';
+      img.src = url;
+    }
   }
 
   document.getElementById('gallery-btn').addEventListener('click', openGallery);
@@ -1044,6 +1107,43 @@
     });
   }
 
+  // ── Storage status ────────────────────────────────────────────────────────
+  const fmtSize = b => {
+    if (b === null || b === undefined) return '?';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let i = 0, v = b;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return `${v < 10 && i > 0 ? v.toFixed(1) : Math.round(v)}${units[i]}`;
+  };
+
+  async function refreshStorage() {
+    const badge = document.getElementById('nas-badge');
+    try {
+      const res = await fetch('/storage');
+      if (!res.ok) return;
+      const s = await res.json();
+      if (!s.enabled) { badge.style.display = 'none'; return; }
+      badge.style.display = '';
+      if (s.mounted) {
+        const backlog = s.queued || s.buffer.files || 0;
+        badge.textContent  = backlog ? `NAS ${backlog} queued` : 'NAS ok';
+        badge.style.color       = backlog ? 'var(--text)' : 'var(--accent)';
+        badge.style.borderColor = backlog ? 'var(--border)' : 'var(--accent)';
+      } else {
+        badge.textContent = 'NAS down';
+        badge.style.color = badge.style.borderColor = 'var(--danger)';
+      }
+      badge.title = [
+        `Archive: ${s.archive_dir || '—'}`,
+        `Mounted: ${s.mounted ? 'yes' : 'no'}`,
+        `Buffer: ${s.buffer.files} file(s), ${s.buffer.used_pct ?? '?'}% of ${fmtSize(s.buffer.total)} used`,
+        `Uploaded: ${s.uploaded}   Failed: ${s.failed}   Discarded: ${s.dropped}`,
+        s.archive.free !== null ? `NAS free: ${fmtSize(s.archive.free)}` : null,
+        s.last_error ? `Last error: ${s.last_error}` : null
+      ].filter(Boolean).join('\n');
+    } catch (_) {}
+  }
+
   // ── Init ──────────────────────────────────────────────────────────────────
   async function init() {
     try {
@@ -1062,6 +1162,8 @@
 
     setTimeout(() => { dragHint.style.opacity = '0'; }, 4000);
     connectSSE();
+    refreshStorage();
+    setInterval(refreshStorage, 30000);
   }
 
   // ── Stream error handling ─────────────────────────────────────────────────

@@ -11,9 +11,11 @@ from pathlib import Path
 import requests
 from flask import (
     Flask, render_template, request, jsonify,
-    Response, session, redirect, url_for
+    Response, session, redirect, url_for, send_file
 )
 from werkzeug.security import generate_password_hash, check_password_hash
+
+import uploader
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -34,6 +36,7 @@ if TILT_MIN >= TILT_MAX: TILT_MIN, TILT_MAX = -90, 90
 DEFAULT_STEP = 5
 PRESETS_FILE      = Path("/opt/picam/presets.json")
 MOTION_TARGET_DIR = Path(os.environ.get("MOTION_TARGET_DIR", "/var/lib/motion"))
+GALLERY_LIMIT     = max(1, int(os.environ.get("GALLERY_LIMIT", 200)))
 
 # ── Startup position ───────────────────────────────────────────────────────────
 
@@ -167,6 +170,13 @@ def save_presets_file(data):
 
 
 presets = load_presets()
+
+# ── Media offload ──────────────────────────────────────────────────────────────
+
+# motion writes captures into MOTION_TARGET_DIR (a tmpfs); the uploader copies
+# them to the NFS archive and clears the buffer. It is a no-op unless NFS_ENABLED.
+media_uploader = uploader.Uploader(logger=app.logger)
+media_uploader.start()
 
 # ── Public assets (no auth — needed by browser before login) ──────────────────
 
@@ -359,12 +369,38 @@ def stream():
         return Response("Camera stream unavailable", status=503)
 
 
+def _is_local():
+    return request.remote_addr in ("127.0.0.1", "::1")
+
+
 @app.route("/motion-event", methods=["POST"])
 def motion_event():
-    if request.remote_addr not in ("127.0.0.1", "::1"):
+    if not _is_local():
         return "", 403
     _notify_motion()
     return "", 204
+
+
+@app.route("/media-saved", methods=["POST"])
+def media_saved():
+    """Webhook called by motion's on_picture_save / on_movie_end hooks.
+
+    Hands the path to the uploader and returns immediately — motion runs these
+    hooks from its capture loop, so this must never wait on the network.
+    """
+    if not _is_local():
+        return "", 403
+    path = request.form.get("path") or (request.get_json(silent=True) or {}).get("path", "")
+    if not path:
+        return "", 400
+    media_uploader.enqueue(path)
+    return "", 204
+
+
+@app.route("/storage")
+@login_required
+def storage():
+    return jsonify(media_uploader.status())
 
 
 @app.route("/events")
@@ -395,27 +431,108 @@ def events():
     )
 
 
+def _gallery_roots():
+    """Named roots the gallery serves from, most transient first.
+
+    'buffer' is the tmpfs holding captures not yet archived. 'archive' is the
+    NFS share, and is absent whenever the uploader reports the mount as down —
+    that check is what keeps a dead NAS from hanging a request thread.
+    """
+    roots = {"buffer": MOTION_TARGET_DIR}
+    archive = media_uploader.archive_root()
+    if archive is not None:
+        roots["archive"] = archive
+    return roots
+
+
+def _entry(path, root, source):
+    st = path.stat()
+    return {
+        "path":   f"{source}/{path.relative_to(root).as_posix()}",
+        "name":   path.name,
+        "kind":   uploader.kind_for(path),
+        "source": source,
+        "ts":     int(st.st_mtime),
+        "size":   st.st_size,
+    }
+
+
+def _subdirs(path):
+    """Immediate subdirectories, newest name first, tolerating an I/O error."""
+    try:
+        return sorted((d for d in path.iterdir() if d.is_dir()),
+                      key=lambda d: d.name, reverse=True)
+    except OSError:
+        return []
+
+
+def _archive_entries(root, limit):
+    """Captures from the newest YYYY/MM/DD directories only.
+
+    The archive grows forever, so a full recursive walk would get slower every
+    day. Descending newest-first and stopping at `limit` keeps the cost flat.
+    """
+    out = []
+    for year in _subdirs(root):
+        for month in _subdirs(year):
+            for day in _subdirs(month):
+                try:
+                    found = [_entry(f, root, "archive")
+                             for f in day.iterdir()
+                             if f.is_file() and uploader.kind_for(f)]
+                except OSError:
+                    continue
+                out.extend(found)
+                if len(out) >= limit:
+                    return out
+    return out
+
+
 @app.route("/gallery")
 @login_required
 def gallery_list():
-    if not MOTION_TARGET_DIR.exists():
-        return jsonify([])
-    files = sorted(
-        (f for f in MOTION_TARGET_DIR.iterdir() if f.suffix.lower() in ('.jpg', '.jpeg')),
-        key=lambda f: f.stat().st_mtime,
-        reverse=True,
-    )[:50]
-    return jsonify([f.name for f in files])
+    entries = []
+    roots   = _gallery_roots()
+
+    buffer_root = roots["buffer"]
+    if buffer_root.exists():
+        try:
+            for f in buffer_root.rglob("*"):
+                if f.is_file() and uploader.kind_for(f):
+                    entries.append(_entry(f, buffer_root, "buffer"))
+        except OSError:
+            app.logger.exception("buffer scan failed")
+
+    if "archive" in roots:
+        try:
+            entries.extend(_archive_entries(roots["archive"], GALLERY_LIMIT))
+        except OSError:
+            app.logger.exception("archive scan failed")
+
+    entries.sort(key=lambda e: e["ts"], reverse=True)
+    return jsonify(entries[:GALLERY_LIMIT])
 
 
-@app.route("/gallery/<filename>")
+@app.route("/gallery/<path:relpath>")
 @login_required
-def gallery_file(filename):
-    name = Path(filename).name
-    path = MOTION_TARGET_DIR / name
-    if not path.exists() or path.suffix.lower() not in ('.jpg', '.jpeg'):
+def gallery_file(relpath):
+    source, _, rest = relpath.partition("/")
+    root = _gallery_roots().get(source)
+    if root is None or not rest:
         return "", 404
-    return Response(path.read_bytes(), content_type="image/jpeg")
+
+    # Resolve then confirm containment — `rest` comes straight from the client.
+    try:
+        base   = root.resolve()
+        target = (base / rest).resolve()
+        if not target.is_relative_to(base) or not target.is_file():
+            return "", 404
+    except OSError:
+        return "", 404
+
+    if uploader.kind_for(target) is None:
+        return "", 404
+    return send_file(target, conditional=True)
 
 
 if __name__ == "__main__":

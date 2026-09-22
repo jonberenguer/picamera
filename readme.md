@@ -17,7 +17,7 @@ A native Raspberry Pi camera service with a dark, modern web UI for live streami
 Three system services run side by side, managed by systemd:
 
 - **`picam-motion`** — runs `motion` (via the `libcamerify` wrapper) to capture the camera and serve a raw MJPEG stream on port `8081`
-- **`picam-flask`** — Flask app that serves the controller UI on `127.0.0.1:8080`, proxies the MJPEG stream, drives the pan/tilt HAT over I2C, and pushes real-time position updates via Server-Sent Events
+- **`picam-flask`** — Flask app that serves the controller UI on `127.0.0.1:8080`, proxies the MJPEG stream, drives the pan/tilt HAT over I2C, pushes real-time position updates via Server-Sent Events, and offloads captures to an NFS share in the background
 - **`caddy`** — reverse proxy that terminates HTTPS on port `443` and redirects port `80`, forwarding traffic to Flask
 
 ## Requirements
@@ -26,10 +26,17 @@ Three system services run side by side, managed by systemd:
 - Compatible camera (libcamera stack — CSI ribbon or USB)
 - [Pimoroni Pan-Tilt HAT](https://shop.pimoroni.com/products/pan-tilt-hat) connected via I2C
 - Internet access during install (to fetch the Caddy apt package)
+- *(optional)* An NFS server for archiving motion captures off the Pi
 
 ## Installation
 
-Copy this folder to the Pi, then run:
+Copy this folder to the Pi, then preview what the installer will do:
+
+```bash
+./install.sh --dry-run      # prints every change, makes none, needs no root
+```
+
+and when it looks right:
 
 ```bash
 sudo ./install.sh
@@ -42,13 +49,37 @@ The script will:
 3. Disable the default `motion` systemd service to avoid port conflicts
 4. Enable I2C in `/boot/firmware/config.txt` if not already active
 5. Apply camera and motion settings from `motion.env` to `/etc/motion/motion.conf`
-6. Wire the **motion detection webhook** — `on_motion_detected` in `motion.conf` posts to Flask so the UI badge fires in real time
-7. Write `/etc/picam.env` with pan/tilt limits, auth credentials, and a persistent `SECRET_KEY`
-8. Copy the Caddyfile to `/etc/caddy/Caddyfile`
-9. Copy app files to `/opt/picam/` and install Python dependencies into a venv
-10. Enable and start `picam-motion`, `picam-flask`, and `caddy`
+6. Wire the **motion webhooks** — `on_motion_detected` posts to Flask so the UI badge fires in real time; `on_picture_save` and `on_movie_end` hand each closed capture to the uploader
+7. Write `/etc/picam.env` (mode `0600`) with pan/tilt limits, auth credentials, NFS settings, and a persistent `SECRET_KEY`
+8. Generate the **tmpfs buffer** mount unit, and the **NFS mount + automount** units when `NFS_ENABLED=true`
+9. Copy the Caddyfile to `/etc/caddy/Caddyfile`
+10. Copy app files to `/opt/picam/` and install Python dependencies into a venv
+11. Enable and start the mounts, `picam-motion`, `picam-flask`, and `caddy`
 
 > **Note:** If I2C was not previously enabled the script will tell you to reboot before the pan/tilt HAT will respond.
+
+### Re-running, and uninstalling
+
+```bash
+./install.sh --dry-run          # preview; no root required
+sudo ./install.sh               # install, or apply changed motion.env settings
+sudo ./install.sh --uninstall   # remove it again (--dry-run works here too)
+```
+
+Re-running is the supported way to apply a config change — `SECRET_KEY` is preserved so
+existing sessions stay valid. Each run writes a manifest to `/etc/picam.manifest` listing
+what it installed, and removes anything the *previous* run created that the new one does
+not. That is what makes changing `MOTION_TARGET_DIR` or setting `NFS_ENABLED=false`
+actually take effect, instead of leaving an orphaned unit quietly mounted.
+
+The first install also snapshots `/etc/motion/motion.conf` and `/etc/caddy/Caddyfile` to
+`*.picam-orig` before editing them, and `--uninstall` puts them back.
+
+`--uninstall` removes `/opt/picam`, `/etc/picam.env`, the systemd units and drop-ins, and
+unmounts the buffer and the archive. It deliberately leaves alone the apt packages, **the
+NFS archive contents**, the I2C entries in `/etc/modules` and the boot config, and the
+system `motion` service (still disabled — `sudo systemctl enable --now motion` brings it
+back). Captures still sitting in the tmpfs buffer are lost, since the buffer is RAM.
 
 ## Usage
 
@@ -108,7 +139,8 @@ sudo journalctl -u caddy        -f
 - **Auto-scan** — sweeps the pan axis back and forth using a sine wave; speed set by `SCAN_SPEED`; any manual move cancels it
 - **Home button** — returns to the startup position (`PAN_START` / `TILT_START`)
 - **Snapshot button** — downloads the current frame as a timestamped JPEG
-- **Motion gallery** — grid button opens a full-screen overlay showing the 50 most recent images saved by `motion` to `MOTION_TARGET_DIR`; tap a thumbnail to view full-size; download button saves the image
+- **Motion gallery** — grid button opens a full-screen overlay showing the most recent captures from both the buffer and the NFS archive, newest first; images open full-size, movies play inline, and the download button saves either. Captures still waiting to be archived are tagged `pending`
+- **Storage badge** — when NFS offload is enabled the header shows `NAS ok`, `NAS n queued`, or a red `NAS down`; hover for the archive path, buffer usage, and upload counts
 - **Fullscreen button** — toggles browser fullscreen; icon swaps between expand/compress
 - **Motion detection badge** — a red "Motion" indicator flashes in the header when `motion` detects activity; fades after 10 seconds
 - **Real-time position display** — pan and tilt bars update instantly via Server-Sent Events (no polling)
@@ -117,6 +149,71 @@ sudo journalctl -u caddy        -f
 - **HAT status badge** — shows `HAT ready` or `no HAT` depending on whether the pantilthat library initialised successfully
 - **PWA support** — installable on Android and iOS; works as a standalone app; service worker caches the UI shell for offline resilience
 - **Form-based authentication** — username/password login page; session cookie is `Secure`, `HttpOnly`, and `SameSite=Lax`; session persists until browser is closed or `/logout` is visited
+
+## Storage and NFS offload
+
+`motion` writes captures into a **tmpfs** buffer (`MOTION_TARGET_DIR`, default
+`/run/picam/media`). Nothing is ever written to the SD card, which is the usual thing that
+kills a Pi running continuous capture.
+
+When `NFS_ENABLED=true`, a background worker in Flask copies each closed capture to the
+NFS share and then removes it from the buffer:
+
+```
+motion writes /run/picam/media/01-20260922120000.jpg   (tmpfs)
+   → on_picture_save fires  → POST /media-saved
+   → uploader copies to     /mnt/picam-nas/picam/<camera>/2026/09/22/01-20260922120000.jpg
+   → buffered copy deleted
+```
+
+Design notes worth knowing before you change any of it:
+
+- **The NAS going away is not an outage.** Captures keep landing in the buffer and are
+  uploaded when the share comes back. The mount is an `.automount` unit, so a dead NAS
+  never delays boot, and `soft` mount options mean a dead server returns an error instead
+  of parking processes in uninterruptible sleep.
+- **The buffer is RAM.** A long enough outage would fill it and take the Pi down, so once
+  it crosses `BUFFER_HIGH_WATER` percent the oldest unarchived captures are deleted, with
+  a warning in the journal and a `dropped` count in `/storage`. Size
+  `BUFFER_TMPFS_SIZE` for how long an outage you want to survive: at ~300 KB a still,
+  256 MB holds roughly 800 captures.
+- **Anything unarchived is lost on reboot.** That is the trade for not touching the SD card.
+- **Uploads are atomic.** Files are copied to `.part` and renamed, so the share never
+  exposes a half-written capture, and a movie still being recorded is skipped until it has
+  been untouched for `UPLOAD_STABLE_AGE` seconds.
+- **Nothing blocks the UI.** Every call that can hang on the network happens on the worker
+  thread; the web routes only read a cached status.
+
+### Setting it up
+
+On the NFS server, export a directory to the Pi. The services run as root, so with the
+default `root_squash` the Pi writes as `nobody` — either grant that user write access or
+export with `no_root_squash`:
+
+```
+/srv/cameras  192.168.1.50(rw,sync,no_subtree_check)
+```
+
+Then in `motion.env`:
+
+```
+NFS_ENABLED=true
+NFS_SERVER=192.168.1.10
+NFS_EXPORT=/srv/cameras
+NFS_MOUNT=/mnt/picam-nas
+```
+
+and re-run `sudo ./install.sh`. Check it landed:
+
+```bash
+systemctl status 'mnt-picam\x2dnas.automount'
+curl -sk https://localhost/storage | python3 -m json.tool
+sudo journalctl -u picam-flask | grep uploader
+```
+
+`/storage` is the source of truth — it reports whether a real NFS filesystem is mounted
+(not just whether the directory exists), how full the buffer is, and the upload, failure,
+and dropped counts.
 
 ## Soft movement limits
 
@@ -133,7 +230,7 @@ Use these when cables or mounting hardware restrict the physical range of motion
 
 ## API
 
-All routes except `/login`, `/logout`, `/manifest.json`, `/sw.js`, and `/motion-event` require a valid session when `AUTH_USER` and `AUTH_PASS` are set. Unauthenticated requests are redirected to `/login`.
+All routes except `/login`, `/logout`, `/manifest.json`, `/sw.js`, `/motion-event`, and `/media-saved` require a valid session when `AUTH_USER` and `AUTH_PASS` are set. Unauthenticated requests are redirected to `/login`.
 
 | Method | Path | Body | Description |
 |--------|------|------|-------------|
@@ -143,8 +240,9 @@ All routes except `/login`, `/logout`, `/manifest.json`, `/sw.js`, and `/motion-
 | `GET` | `/position` | — | `{"pan": 0, "tilt": 0, "hardware": true, "scan": false}` |
 | `GET` | `/limits` | — | `{"pan": {"min": -90, "max": 90}, "tilt": {"min": -90, "max": 90}}` |
 | `GET` | `/events` | — | SSE stream — pushes `{"pan", "tilt"}` on every move and `event: motion` on detection |
-| `GET` | `/gallery` | — | JSON array of the 50 most recent motion-capture filenames |
-| `GET` | `/gallery/<filename>` | — | Serve a single motion-capture image as `image/jpeg` |
+| `GET` | `/gallery` | — | Most recent captures from the buffer and the NFS archive, newest first: `[{"path": "archive/2026/09/22/x.jpg", "name", "kind", "source", "ts", "size"}]` |
+| `GET` | `/gallery/<source>/<path>` | — | Serve one capture; `source` is `buffer` or `archive` |
+| `GET` | `/storage` | — | Offload status — mount state, buffer usage, upload/failure/dropped counts |
 | `POST` | `/move` | `{"direction": "up"\|"down"\|"left"\|"right", "step": 5}` | Move one step |
 | `POST` | `/goto` | `{"pan": 30, "tilt": -10}` | Jump to absolute position |
 | `POST` | `/home` | — | Return to startup position |
@@ -156,6 +254,7 @@ All routes except `/login`, `/logout`, `/manifest.json`, `/sw.js`, and `/motion-
 | `POST` | `/login` | `username`, `password` (form) | Authenticate |
 | `GET` | `/logout` | — | Clear session and redirect to login |
 | `POST` | `/motion-event` | — | Internal webhook called by `motion` on detection (localhost only) |
+| `POST` | `/media-saved` | `path` (form) | Internal webhook called by `motion` when a capture is closed (localhost only) |
 
 ## Configuration
 
@@ -180,6 +279,25 @@ Edit `motion.env` and re-run `sudo ./install.sh` to apply changes.
 | `AUTH_USER` | _(empty)_ | Login username — leave blank to disable auth entirely |
 | `AUTH_PASS` | _(empty)_ | Login password |
 
+### NFS offload
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NFS_ENABLED` | `false` | Turn the offload on; when false captures stay in the buffer |
+| `NFS_SERVER` | _(empty)_ | NFS server hostname or IP |
+| `NFS_EXPORT` | _(empty)_ | Exported path on the server |
+| `NFS_MOUNT` | `/mnt/picam-nas` | Local mount point |
+| `NFS_SUBDIR` | `picam` | Directory inside the export to archive under |
+| `CAMERA_NAME` | _(hostname)_ | Per-camera directory inside `NFS_SUBDIR` |
+| `NFS_MOUNT_OPTIONS` | `soft,timeo=50,…` | Mount options — keep `soft`, see above |
+| `BUFFER_TMPFS_SIZE` | `256M` | Size of the tmpfs capture buffer (this is RAM) |
+| `BUFFER_HIGH_WATER` | `80` | Buffer percent at which the oldest unarchived captures are discarded |
+| `UPLOAD_STABLE_AGE` | `30` | Seconds a file must be untouched before a sweep uploads it |
+| `UPLOAD_SWEEP_INTERVAL` | `30` | Seconds between buffer rescans |
+| `UPLOAD_RETRY_MIN` | `5` | Initial retry backoff in seconds |
+| `UPLOAD_RETRY_MAX` | `300` | Maximum retry backoff in seconds |
+| `GALLERY_LIMIT` | `200` | Most recent captures the gallery lists |
+
 ### Camera / motion
 
 | Variable | Default | Description |
@@ -190,8 +308,9 @@ Edit `motion.env` and re-run `sudo ./install.sh` to apply changes.
 | `MOTION_HEIGHT` | `960` | Frame height in pixels |
 | `MOTION_STREAM_MAXRATE` | `100` | Max FPS served to stream clients |
 | `MOTION_PICTURE_OUTPUT` | `first` | `first` saves one image per motion event; `on` saves every frame; `off` disables |
-| `MOTION_MOVIE_OUTPUT` | `off` | Video file recording |
-| `MOTION_TARGET_DIR` | `/var/lib/motion` | Where snapshots are saved |
+| `MOTION_MOVIE_OUTPUT` | `off` | Video file recording — the gallery and uploader already handle movies |
+| `MOTION_TARGET_DIR` | `/run/picam/media` | tmpfs capture buffer, **not** permanent storage |
+| `MOTION_ROTATE` | `0` | Image rotation in degrees (`0`, `90`, `180`, `270`) |
 | `MOTION_THRESHOLD` | `2000` | Pixel-change threshold that counts as motion |
 | `MOTION_MINIMUM_MOTION_FRAMES` | `1` | Consecutive frames with motion before an event fires |
 | `MOTION_EVENT_GAP` | `0` | Seconds of no-motion before the event ends |
@@ -201,13 +320,14 @@ Edit `motion.env` and re-run `sudo ./install.sh` to apply changes.
 
 ```
 picamera/
-├── install.sh                    # One-shot install script (run with sudo)
+├── install.sh                    # Install / re-install / --uninstall / --dry-run
 ├── Caddyfile                     # Caddy reverse proxy config (HTTPS + HTTP→HTTPS redirect)
 ├── picam-motion.service          # systemd unit — motion with libcamerify
 ├── picam-flask.service           # systemd unit — Flask controller
 ├── app.py                        # Flask server — UI, stream proxy, pan/tilt, SSE, auth
+├── uploader.py                   # Background tmpfs → NFS offload worker
 ├── requirements.txt              # Python dependencies (flask, requests, pantilthat)
-├── motion.env                    # All tunable settings (camera, pan/tilt, auth)
+├── motion.env                    # All tunable settings (camera, pan/tilt, auth, NFS)
 ├── templates/
 │   ├── index.html                # Controller UI
 │   └── login.html                # Authentication page
@@ -224,6 +344,7 @@ Files installed on the Pi:
 /opt/picam/
 ├── venv/                         # Python virtual environment
 ├── app.py
+├── uploader.py
 ├── requirements.txt
 ├── presets.json                  # Saved camera positions (created on first save)
 ├── templates/
@@ -235,8 +356,17 @@ Files installed on the Pi:
     ├── manifest.json
     └── sw.js
 
-/etc/picam.env                    # Runtime environment variables (auth, pan/tilt limits)
+/etc/picam.env                    # Runtime environment variables (auth, pan/tilt, NFS) — mode 0600
+/etc/picam.manifest               # What the last install created, used to clean up on re-run/uninstall
 /etc/caddy/Caddyfile              # Caddy configuration
+/etc/systemd/system/
+├── run-picam-media.mount         # tmpfs capture buffer
+├── mnt-picam\x2dnas.mount        # NFS archive (only when NFS_ENABLED=true)
+├── mnt-picam\x2dnas.automount    # Mounts the archive on first access
+└── picam-{motion,flask}.service.d/buffer.conf   # Wait for the buffer mount
+
+/run/picam/media                  # tmpfs buffer — captures awaiting upload
+/mnt/picam-nas/<subdir>/<camera>/YYYY/MM/DD/     # NFS archive
 ```
 
 ## Ports
