@@ -150,6 +150,23 @@ sudo journalctl -u caddy        -f
 - **PWA support** — installable on Android and iOS; works as a standalone app; service worker caches the UI shell for offline resilience
 - **Form-based authentication** — username/password login page; session cookie is `Secure`, `HttpOnly`, and `SameSite=Lax`; session persists until browser is closed or `/logout` is visited
 
+## Configuration variants
+
+`motion-stream-only.env` is a complete alternative to `motion.env` that turns the Pi into
+a pure live-stream camera: the feed and pan/tilt work, but no stills or movies are ever
+written. It differs from `motion.env` in exactly one setting
+(`MOTION_PICTURE_OUTPUT=off`), so a diff between the two shows precisely what changes.
+
+```bash
+cp motion-stream-only.env motion.env
+sudo ./install.sh
+```
+
+Any such variant must be a **complete** file, not a fragment. `install.sh` only ever reads
+`motion.env`, and the `FLASK_VARS` filter that builds `/etc/picam.env` would find no
+`AUTH_USER`/`AUTH_PASS` in a partial file — silently disabling the login and exposing the
+UI to everyone on the network.
+
 ## Storage and NFS offload
 
 `motion` writes captures into a **tmpfs** buffer (`MOTION_TARGET_DIR`, default
@@ -330,6 +347,7 @@ picamera/
 ├── uploader.py                   # Background tmpfs → NFS offload worker
 ├── requirements.txt              # Python dependencies (flask, requests, pantilthat)
 ├── motion.env                    # All tunable settings (camera, pan/tilt, auth, NFS)
+├── motion-stream-only.env        # Swappable variant — live stream only, nothing saved
 ├── templates/
 │   ├── index.html                # Controller UI
 │   └── login.html                # Authentication page

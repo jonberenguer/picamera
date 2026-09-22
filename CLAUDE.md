@@ -48,6 +48,11 @@ Data flow:
   that returns live data must be added there**, or the SW will cache it.
 - `static/manifest.json`, `icon.svg`, `favicon.svg` — PWA assets.
 - `motion.env` — the single source of truth for all tunables (pan/tilt, auth, camera, NFS).
+- `motion-stream-only.env` — a complete swappable alternative to `motion.env` (live stream,
+  nothing saved). Any variant must carry **every** section: `install.sh` reads only
+  `motion.env`, and a fragment missing `AUTH_USER`/`AUTH_PASS` silently disables the login.
+  Keep it byte-identical to `motion.env` apart from the capture settings, so a diff of the
+  two is self-documenting.
 - `install.sh` — root installer, with `--dry-run` (no root needed) and `--uninstall`.
   Parses `motion.env`, rewrites `/etc/motion/motion.conf`, writes `/etc/picam.env`,
   generates the mount units, copies to `/opt/picam`, builds the venv, restarts everything.
