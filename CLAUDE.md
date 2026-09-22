@@ -54,6 +54,10 @@ Data flow:
   **Every mutating command goes through `run`, `run_ok`, `write_file` or `append_line`** so
   that `--dry-run` stays a property of the script rather than something each step
   remembers — adding a bare `cp`/`sed -i`/`cat >` silently breaks it.
+  None of those helpers may *end* on a bare `[[ test ]] && cmd`: a false test becomes the
+  function's non-zero return, and `set -e` then kills the script at the call site. A
+  `--dry-run` pass cannot catch it, because the dry-run branch returns 0 — this shipped
+  once and only failed on a real install.
   Each run writes `/etc/picam.manifest` and removes anything the previous manifest lists
   that the new one does not; that is what makes a changed `MOTION_TARGET_DIR` or
   `NFS_ENABLED=false` take effect instead of orphaning a mounted unit.
@@ -79,6 +83,12 @@ Because the buffer is RAM, a long outage would otherwise take the Pi down: past
 counts them in `/storage` as `dropped`. Uploads go to a `.part` file then `os.replace()`,
 so the share never shows a half-written capture. The sweep skips files touched within
 `UPLOAD_STABLE_AGE` seconds, which is what keeps an in-progress movie from being copied.
+
+**The worker runs even when `NFS_ENABLED` is false.** The sweep is the only thing that
+reports buffer usage and the only thing that sheds, so gating the worker on `NFS_ENABLED`
+would leave the tmpfs unprotected exactly while the share is still being built. Only the
+upload is gated — `enqueue()` refuses, and `_sweep()` skips both the mount probe and the
+enqueue pass.
 
 ## Conventions
 

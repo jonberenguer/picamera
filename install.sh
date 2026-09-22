@@ -60,8 +60,12 @@ write_file() {
         sed 's/^/         | /'
     else
         cat > "$dest"
-        [[ -n "$mode" ]] && chmod "$mode" "$dest"
+        # Must not end on a bare `[[ ]] && cmd`: a false test makes this the
+        # function's non-zero return value, and `set -e` then kills the script
+        # at the call site. --dry-run cannot catch it, since that path returns 0.
+        if [[ -n "$mode" ]]; then chmod "$mode" "$dest"; fi
     fi
+    return 0
 }
 
 append_line() {   # append_line <line> <file> — only if not already present
