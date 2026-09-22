@@ -41,12 +41,23 @@ Data flow:
 - `uploader.py` — the only other Python module. Owns the tmpfs→NFS offload: the worker
   thread, the sweep, high-water shedding, and the cached storage status. It exists
   separately because everything in it must stay off the request path.
-- `templates/index.html` — the entire frontend: markup, CSS, and JS in one ~1100-line
-  file. There is no build step and no framework. Keep it that way unless asked.
-- `templates/login.html` — login form, same self-contained style.
+- `templates/index.html` — markup only (~170 lines). Styles and behaviour live in
+  `static/`. There is still no build step and no framework; keep it that way.
+- `templates/login.html` — login form markup only.
+- `static/base.css` — design tokens and the reset, shared by both pages and loaded first.
+  `app.css` and `login.css` hold page-specific rules and depend on it.
+- `static/app.js` — all controller behaviour. **It is served statically, so it never goes
+  through Jinja.** Anything the server decides at render time is passed via
+  `window.PICAM`, set by an inline block in `index.html` (currently just `pantilt`). Adding
+  a `{{ ... }}` to this file silently ships the literal text to the browser.
 - `static/sw.js` — service worker. `BYPASS` lists every dynamic route; **any new route
   that returns live data must be added there**, or the SW will cache it.
 - `static/manifest.json`, `icon.svg`, `favicon.svg` — PWA assets.
+- Stylesheets and scripts are referenced as `/static/<file>?v={{ assets['<file>'] }}`.
+  `ASSETS` in `app.py` hashes each file's **contents** at import, so the query changes only
+  when the file really changes and a reinstall that touches nothing keeps caches warm.
+  A new static asset must be added to that dict, and to `SHELL` in `sw.js` or it will not
+  be there offline.
 - `motion.env` — the single source of truth for all tunables (pan/tilt, auth, camera, NFS).
 - `requirements.txt` — core deps only. `pantilthat` is deliberately absent: it is useless
   without the HAT, and `install.sh` pip-installs it unless `PANTILT_ENABLED=off`.
@@ -112,6 +123,9 @@ enqueue pass.
   session exists) and `/motion-event` (localhost-only, checked via `request.remote_addr`).
 - Servo state is guarded by `lock`; `_apply()` must only be called while holding it.
   Presets use a separate `presets_lock`. SSE client set uses `_sse_lock`.
+- Persist first, then adopt: the preset routes build the new dict, write it, and only then
+  update the in-memory `presets`. A failed write must never leave the process claiming
+  something that is not on disk.
 - All angles are clamped through `clamp()` against the soft limits before reaching the
   hardware. Never write to `pantilthat` outside `_apply()`.
 - **The HAT is optional and that is a supported mode, not a degraded one.** `HARDWARE` is
@@ -170,4 +184,9 @@ on a running Pi.
   declares `RequiresMountsFor=` on it. Only the tmpfs gets that, via a drop-in.
 - `motion.env` currently ships real default credentials (`picamera`/`picamera`). Do not
   copy them into examples or docs as if they were safe.
-- The repo `.gitignore` is empty; `presets.json` is only ever created under `/opt/picam`.
+- `presets.json` lives at `PRESETS_FILE` (default `/opt/picam/presets.json`). It is
+  written atomically — temp file, fsync, `os.replace`, then fsync the directory — because
+  a truncate-in-place write that loses power takes every preset with it. Anything else
+  this app persists should follow the same pattern.
+- A file that cannot be parsed is moved aside (`.corrupt`) rather than ignored. Silently
+  returning `{}` would let the next save overwrite the damaged file for good.

@@ -1,5 +1,6 @@
 import os
 import math
+import hashlib
 import json
 import queue
 import time
@@ -96,6 +97,22 @@ app.secret_key = os.environ.get("SECRET_KEY", os.urandom(24).hex())
 app.config['SESSION_COOKIE_SECURE']   = True
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+
+# ── Static asset versions ──────────────────────────────────────────────────────
+
+# Hash the contents, not the mtime: the query only changes when the file really
+# changes, so browsers keep a warm cache across reinstalls that touch nothing.
+def _asset_version(name):
+    try:
+        return hashlib.sha256(
+            (Path(app.static_folder) / name).read_bytes()
+        ).hexdigest()[:10]
+    except OSError:
+        return "dev"
+
+
+ASSETS = {name: _asset_version(name)
+          for name in ("base.css", "app.css", "app.js", "login.css")}
 
 state = {"pan": _pan_start, "tilt": _tilt_start}
 lock  = threading.Lock()
@@ -198,17 +215,55 @@ presets_lock = threading.Lock()
 
 
 def load_presets():
-    if PRESETS_FILE.exists():
+    """Read saved positions from disk.
+
+    An unreadable file is moved aside rather than ignored: returning {} silently
+    would let the next save overwrite the damaged file and destroy whatever
+    could still have been recovered from it.
+    """
+    if not PRESETS_FILE.exists():
+        return {}
+    try:
+        data = json.loads(PRESETS_FILE.read_text())
+    except Exception as e:
+        damaged = PRESETS_FILE.with_name(PRESETS_FILE.name + ".corrupt")
         try:
-            return json.loads(PRESETS_FILE.read_text())
-        except Exception:
-            return {}
-    return {}
+            PRESETS_FILE.replace(damaged)
+            print(f"presets file unreadable ({e}); moved to {damaged}")
+        except OSError:
+            print(f"presets file unreadable ({e}) and could not be moved aside")
+        return {}
+    if not isinstance(data, dict):
+        print(f"presets file is {type(data).__name__}, expected object — ignoring")
+        return {}
+    return data
 
 
 def save_presets_file(data):
+    """Write presets atomically.
+
+    write_text() truncates before writing, so losing power in between leaves an
+    empty or half-written file and every preset is gone. Write a sibling temp
+    file, flush it to disk, then rename: on POSIX a rename within one filesystem
+    is atomic, so a reader only ever sees the whole old file or the whole new
+    one. The directory is fsynced too, or the rename itself can be lost.
+    """
     PRESETS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    PRESETS_FILE.write_text(json.dumps(data, indent=2))
+    tmp = PRESETS_FILE.with_name(PRESETS_FILE.name + ".tmp")
+    try:
+        with tmp.open("w") as f:
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, PRESETS_FILE)
+        dir_fd = os.open(PRESETS_FILE.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 presets = load_presets()
@@ -248,7 +303,7 @@ def login_page():
             session["logged_in"] = True
             return redirect(url_for("index"))
         error = "Invalid username or password"
-    return render_template("login.html", error=error)
+    return render_template("login.html", error=error, assets=ASSETS)
 
 
 @app.route("/logout")
@@ -263,7 +318,7 @@ def logout():
 def index():
     # The template needs this at render time, not after /position resolves —
     # otherwise the pan/tilt controls flash up before being removed.
-    return render_template("index.html", pantilt=_pantilt_state())
+    return render_template("index.html", pantilt=_pantilt_state(), assets=ASSETS)
 
 
 @app.route("/limits")
@@ -361,18 +416,22 @@ def save_preset():
     with lock:
         pos = {"pan": state["pan"], "tilt": state["tilt"]}
     with presets_lock:
-        presets[name] = pos
-        save_presets_file(presets)
-    return jsonify(presets)
+        updated = {**presets, name: pos}
+        save_presets_file(updated)        # only adopt it once it is on disk
+        presets.clear()
+        presets.update(updated)
+        return jsonify(presets)
 
 
 @app.route("/presets/<name>", methods=["DELETE"])
 @login_required
 def delete_preset(name):
     with presets_lock:
-        presets.pop(name, None)
-        save_presets_file(presets)
-    return jsonify(presets)
+        updated = {k: v for k, v in presets.items() if k != name}
+        save_presets_file(updated)
+        presets.clear()
+        presets.update(updated)
+        return jsonify(presets)
 
 
 @app.route("/snapshot")
