@@ -1122,9 +1122,16 @@
       const res = await fetch('/storage');
       if (!res.ok) return;
       const s = await res.json();
-      if (!s.enabled) { badge.style.display = 'none'; return; }
       badge.style.display = '';
-      if (s.mounted) {
+      if (!s.enabled) {
+        // Offload is off, so nothing drains the buffer — its fill level is the
+        // only thing worth showing, and it is what shedding acts on.
+        const pct = s.buffer.used_pct;
+        badge.textContent = pct === null ? `BUF ${s.buffer.files}` : `BUF ${pct}%`;
+        const hot = pct !== null && pct >= 60;
+        badge.style.color = badge.style.borderColor =
+          hot ? 'var(--danger)' : 'var(--text-muted)';
+      } else if (s.mounted) {
         const backlog = s.queued || s.buffer.files || 0;
         badge.textContent  = backlog ? `NAS ${backlog} queued` : 'NAS ok';
         badge.style.color       = backlog ? 'var(--text)' : 'var(--accent)';
@@ -1134,8 +1141,8 @@
         badge.style.color = badge.style.borderColor = 'var(--danger)';
       }
       badge.title = [
-        `Archive: ${s.archive_dir || '—'}`,
-        `Mounted: ${s.mounted ? 'yes' : 'no'}`,
+        s.enabled ? `Archive: ${s.archive_dir || '—'}` : 'NFS offload: disabled',
+        s.enabled ? `Mounted: ${s.mounted ? 'yes' : 'no'}` : null,
         `Buffer: ${s.buffer.files} file(s), ${s.buffer.used_pct ?? '?'}% of ${fmtSize(s.buffer.total)} used`,
         `Uploaded: ${s.uploaded}   Failed: ${s.failed}   Discarded: ${s.dropped}`,
         s.archive.free !== null ? `NAS free: ${fmtSize(s.archive.free)}` : null,

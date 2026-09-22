@@ -160,18 +160,28 @@ class Uploader:
     # ── Public API ────────────────────────────────────────────────────────────
 
     def start(self):
-        """Start the worker. Safe to call when NFS offload is disabled."""
-        if not NFS_ENABLED:
-            self._info("NFS offload disabled (NFS_ENABLED is not true)")
-            return
+        """Start the worker.
+
+        The worker runs even with NFS offload disabled. The sweep is the only
+        thing that reports buffer usage and the only thing that sheds at the
+        high-water mark, so gating the whole worker on NFS_ENABLED would leave
+        the tmpfs with no protection at all while the share is being set up.
+        Only the upload itself is gated.
+        """
         if self._thread and self._thread.is_alive():
             return
         self._thread = threading.Thread(target=self._worker, name="uploader", daemon=True)
         self._thread.start()
-        self._info(
-            f"NFS offload started: {BUFFER_DIR} -> "
-            f"{NFS_MOUNT / NFS_SUBDIR / CAMERA_NAME} (high water {BUFFER_HIGH_WATER}%)"
-        )
+        if NFS_ENABLED:
+            self._info(
+                f"NFS offload started: {BUFFER_DIR} -> "
+                f"{NFS_MOUNT / NFS_SUBDIR / CAMERA_NAME} (high water {BUFFER_HIGH_WATER}%)"
+            )
+        else:
+            self._info(
+                f"NFS offload disabled — watching {BUFFER_DIR} only "
+                f"(high water {BUFFER_HIGH_WATER}%, captures are never archived)"
+            )
 
     def enqueue(self, path):
         """Hand a freshly closed capture to the worker. Never blocks."""
@@ -297,7 +307,7 @@ class Uploader:
     # ── Sweep: rescan, retry, and protect the tmpfs ───────────────────────────
 
     def _sweep(self):
-        mounted = nfs_is_mounted(NFS_MOUNT)
+        mounted = nfs_is_mounted(NFS_MOUNT) if NFS_ENABLED else False
         buf     = _space(BUFFER_DIR)
         files   = self._buffer_files()
 
@@ -309,7 +319,8 @@ class Uploader:
 
         # An outage is not a failed upload — nothing was attempted — but /storage
         # should still say what is wrong and since when, not just "not mounted".
-        if not mounted:
+        # With offload switched off there is no outage to report.
+        if NFS_ENABLED and not mounted:
             self._note_outage()
 
         # The buffer is RAM. Filling it takes the whole Pi down, so shedding the
@@ -318,7 +329,7 @@ class Uploader:
             self._shed(files, buf)
             files = self._buffer_files()
 
-        if mounted and time.monotonic() >= self._retry_at:
+        if NFS_ENABLED and mounted and time.monotonic() >= self._retry_at:
             now = time.time()
             for path, fstat in files:
                 # Skip anything still being written — a movie in progress has a
@@ -365,9 +376,11 @@ class Uploader:
         if dropped:
             with self._lock:
                 self._status["dropped"] += dropped
+            why = ("without archiving them" if NFS_ENABLED
+                   else "unarchived (NFS offload is disabled)")
             self._warn(
                 f"buffer {buf['used_pct']}% full (high water {BUFFER_HIGH_WATER}%) — "
-                f"discarded {dropped} of the oldest captures without archiving them"
+                f"discarded {dropped} of the oldest captures {why}"
             )
 
     # ── Outcome bookkeeping ───────────────────────────────────────────────────

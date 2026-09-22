@@ -140,7 +140,7 @@ sudo journalctl -u caddy        -f
 - **Home button** — returns to the startup position (`PAN_START` / `TILT_START`)
 - **Snapshot button** — downloads the current frame as a timestamped JPEG
 - **Motion gallery** — grid button opens a full-screen overlay showing the most recent captures from both the buffer and the NFS archive, newest first; images open full-size, movies play inline, and the download button saves either. Captures still waiting to be archived are tagged `pending`
-- **Storage badge** — when NFS offload is enabled the header shows `NAS ok`, `NAS n queued`, or a red `NAS down`; hover for the archive path, buffer usage, and upload counts
+- **Storage badge** — shows `NAS ok`, `NAS n queued`, or a red `NAS down` when offload is enabled, and `BUF <n>%` (red past 60%) when it is not; hover for the archive path, buffer usage, and upload counts
 - **Fullscreen button** — toggles browser fullscreen; icon swaps between expand/compress
 - **Motion detection badge** — a red "Motion" indicator flashes in the header when `motion` detects activity; fades after 10 seconds
 - **Real-time position display** — pan and tilt bars update instantly via Server-Sent Events (no polling)
@@ -174,7 +174,9 @@ Design notes worth knowing before you change any of it:
   of parking processes in uninterruptible sleep.
 - **The buffer is RAM.** A long enough outage would fill it and take the Pi down, so once
   it crosses `BUFFER_HIGH_WATER` percent the oldest unarchived captures are deleted, with
-  a warning in the journal and a `dropped` count in `/storage`. Size
+  a warning in the journal and a `dropped` count in `/storage`. This applies with
+  `NFS_ENABLED=false` too — the buffer still needs watching when nothing is draining it,
+  and the header badge then shows `BUF <n>%` instead of the NAS state. Size
   `BUFFER_TMPFS_SIZE` for how long an outage you want to survive: at ~300 KB a still,
   256 MB holds roughly 800 captures.
 - **Anything unarchived is lost on reboot.** That is the trade for not touching the SD card.
