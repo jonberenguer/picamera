@@ -24,7 +24,7 @@ Three system services run side by side, managed by systemd:
 
 - Raspberry Pi running **Raspberry Pi OS (Bookworm / Debian 12)**
 - Compatible camera (libcamera stack — CSI ribbon or USB)
-- [Pimoroni Pan-Tilt HAT](https://shop.pimoroni.com/products/pan-tilt-hat) connected via I2C
+- *(optional)* [Pimoroni Pan-Tilt HAT](https://shop.pimoroni.com/products/pan-tilt-hat) connected via I2C — without one the app runs as a fixed camera
 - Internet access during install (to fetch the Caddy apt package)
 - *(optional)* An NFS server for archiving motion captures off the Pi
 
@@ -150,6 +150,31 @@ sudo journalctl -u caddy        -f
 - **PWA support** — installable on Android and iOS; works as a standalone app; service worker caches the UI shell for offline resilience
 - **Form-based authentication** — username/password login page; session cookie is `Secure`, `HttpOnly`, and `SameSite=Lax`; session persists until browser is closed or `/logout` is visited
 
+## Running without the Pan-Tilt HAT
+
+The HAT is optional. With no HAT the app runs as a **fixed camera**: the live stream,
+digital zoom, snapshot, motion detection, gallery, NFS archive, PWA and login all work
+exactly as normal — only the pan/tilt surface is gone.
+
+It is not degraded into a UI full of dead buttons. The d-pad, position bars, speed
+selector, presets, auto-scan, home button and drag-to-pan are removed, and the header
+badge reads `fixed camera` (hover for the reason). The movement routes return `409` rather
+than reporting a success that never happened, and the auto-scan thread is never started.
+
+`PANTILT_ENABLED` in `motion.env` controls this:
+
+| Value | Behaviour |
+|-------|-----------|
+| `auto` *(default)* | Use the HAT if it answers on I2C, otherwise fall back to fixed-camera mode. Nothing to configure either way. |
+| `on` | The HAT is expected. If it does not respond, log an error loudly — but still serve the camera, since a servo fault should never cost you the video feed. |
+| `off` | Fixed camera. Never touches I2C, and the installer skips the I2C packages, the boot-config change and the reboot prompt entirely. |
+
+Detection is reliable rather than a guess: `pantilthat.pan()` opens the I2C bus and writes
+to the HAT's address, so a missing HAT raises synchronously at startup (after ~10 retries,
+about 0.1 s) instead of failing silently on every later move. Four distinct failures are
+caught — the package missing, `smbus` missing, I2C disabled, and the bus present but no
+HAT answering.
+
 ## Configuration variants
 
 `motion-stream-only.env` is a complete alternative to `motion.env` that turns the Pi into
@@ -236,7 +261,8 @@ and dropped counts.
 
 ## Soft movement limits
 
-The camera will never move outside the configured angle range, regardless of move commands:
+Ignored when there is no pan/tilt HAT. Otherwise the camera will never move outside the
+configured angle range, regardless of move commands:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -256,13 +282,13 @@ All routes except `/login`, `/logout`, `/manifest.json`, `/sw.js`, `/motion-even
 | `GET` | `/` | — | Controller UI |
 | `GET` | `/stream` | — | MJPEG stream (proxied from motion) |
 | `GET` | `/snapshot` | — | Current frame as `image/jpeg` download |
-| `GET` | `/position` | — | `{"pan": 0, "tilt": 0, "hardware": true, "scan": false}` |
+| `GET` | `/position` | — | `{"pan": 0, "tilt": 0, "hardware": true, "scan": false, "pantilt": {"available", "mode", "reason"}}` |
 | `GET` | `/limits` | — | `{"pan": {"min": -90, "max": 90}, "tilt": {"min": -90, "max": 90}}` |
 | `GET` | `/events` | — | SSE stream — pushes `{"pan", "tilt"}` on every move and `event: motion` on detection |
 | `GET` | `/gallery` | — | Most recent captures from the buffer and the NFS archive, newest first: `[{"path": "archive/2026/09/22/x.jpg", "name", "kind", "source", "ts", "size"}]` |
 | `GET` | `/gallery/<source>/<path>` | — | Serve one capture; `source` is `buffer` or `archive` |
 | `GET` | `/storage` | — | Offload status — mount state, buffer usage, upload/failure/dropped counts |
-| `POST` | `/move` | `{"direction": "up"\|"down"\|"left"\|"right", "step": 5}` | Move one step |
+| `POST` | `/move` | `{"direction": "up"\|"down"\|"left"\|"right", "step": 5}` | Move one step — `409` with no HAT |
 | `POST` | `/goto` | `{"pan": 30, "tilt": -10}` | Jump to absolute position |
 | `POST` | `/home` | — | Return to startup position |
 | `POST` | `/scan` | `{"enabled": true\|false}` | Start or stop auto-scan |
@@ -283,6 +309,7 @@ Edit `motion.env` and re-run `sudo ./install.sh` to apply changes.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `PANTILT_ENABLED` | `auto` | `auto` / `on` / `off` — see [Running without the Pan-Tilt HAT](#running-without-the-pan-tilt-hat) |
 | `PAN_START` | `0` | Pan position at startup (−90 to 90°) |
 | `TILT_START` | `0` | Tilt position at startup (−90 to 90°) |
 | `PAN_MIN` | `-90` | Soft left limit |
@@ -345,7 +372,7 @@ picamera/
 ├── picam-flask.service           # systemd unit — Flask controller
 ├── app.py                        # Flask server — UI, stream proxy, pan/tilt, SSE, auth
 ├── uploader.py                   # Background tmpfs → NFS offload worker
-├── requirements.txt              # Python dependencies (flask, requests, pantilthat)
+├── requirements.txt              # Core Python dependencies (pantilthat is installed separately)
 ├── motion.env                    # All tunable settings (camera, pan/tilt, auth, NFS)
 ├── motion-stream-only.env        # Swappable variant — live stream only, nothing saved
 ├── templates/

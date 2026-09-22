@@ -34,7 +34,7 @@ if PAN_MIN  >= PAN_MAX:  PAN_MIN,  PAN_MAX  = -90, 90
 if TILT_MIN >= TILT_MAX: TILT_MIN, TILT_MAX = -90, 90
 
 DEFAULT_STEP = 5
-PRESETS_FILE      = Path("/opt/picam/presets.json")
+PRESETS_FILE      = Path(os.environ.get("PRESETS_FILE", "/opt/picam/presets.json"))
 MOTION_TARGET_DIR = Path(os.environ.get("MOTION_TARGET_DIR", "/var/lib/motion"))
 GALLERY_LIMIT     = max(1, int(os.environ.get("GALLERY_LIMIT", 200)))
 
@@ -43,17 +43,44 @@ GALLERY_LIMIT     = max(1, int(os.environ.get("GALLERY_LIMIT", 200)))
 _pan_start  = clamp(int(os.environ.get("PAN_START",  0)), PAN_MIN,  PAN_MAX)
 _tilt_start = clamp(int(os.environ.get("TILT_START", 0)), TILT_MIN, TILT_MAX)
 
-# ── Hardware ───────────────────────────────────────────────────────────────────
+# ── Pan/tilt hardware ──────────────────────────────────────────────────────────
 
-try:
-    import pantilthat
-    pantilthat.idle_timeout(0)  # keep servos powered between button presses
-    pantilthat.pan(_pan_start)
-    pantilthat.tilt(_tilt_start)
-    HARDWARE = True
-except Exception as e:
-    print(f"pantilthat unavailable: {e}")
-    HARDWARE = False
+# auto — use the HAT if it answers, otherwise run as a fixed camera
+# on   — the HAT is expected; say so loudly if it is missing
+# off  — fixed camera, never touch I2C at all
+PANTILT_MODE = os.environ.get("PANTILT_ENABLED", "auto").strip().lower()
+if PANTILT_MODE not in ("auto", "on", "off"):
+    PANTILT_MODE = "auto"
+
+HARDWARE       = False
+PANTILT_REASON = ""
+
+if PANTILT_MODE == "off":
+    PANTILT_REASON = "disabled by PANTILT_ENABLED=off"
+    print("pan/tilt disabled — running as a fixed camera")
+else:
+    try:
+        import pantilthat
+        pantilthat.idle_timeout(0)  # keep servos powered between button presses
+        # pan() opens the I2C bus and writes, so an absent HAT raises right here
+        # (after ~10 retries) rather than failing silently on every later move.
+        pantilthat.pan(_pan_start)
+        pantilthat.tilt(_tilt_start)
+        HARDWARE = True
+    except Exception as e:
+        PANTILT_REASON = f"{type(e).__name__}: {e}"
+        # A servo fault must never take down the camera: the stream, snapshot,
+        # gallery and motion alerts are all useful without a HAT.
+        if PANTILT_MODE == "on":
+            print(f"ERROR: PANTILT_ENABLED=on but the pan/tilt HAT did not "
+                  f"respond ({PANTILT_REASON}) — continuing as a fixed camera")
+        else:
+            print(f"no pan/tilt HAT detected, running as a fixed camera "
+                  f"({PANTILT_REASON})")
+
+
+def _pantilt_state():
+    return {"available": HARDWARE, "mode": PANTILT_MODE, "reason": PANTILT_REASON}
 
 # ── Auth ───────────────────────────────────────────────────────────────────────
 
@@ -108,6 +135,19 @@ def login_required(f):
     return decorated
 
 
+def pantilt_required(f):
+    """Refuse movement when there is no HAT, instead of reporting a fake success."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not HARDWARE:
+            return jsonify({
+                "error":   "pan/tilt is not available on this camera",
+                "pantilt": _pantilt_state(),
+            }), 409
+        return f(*args, **kwargs)
+    return decorated
+
+
 def _apply(pan, tilt):
     """Write pan/tilt to state and hardware. Must be called under lock."""
     state["pan"]  = pan
@@ -144,6 +184,8 @@ def _scan_worker():
 
 def _set_scan(enabled):
     global scan_active, _scan_thread
+    if not HARDWARE:
+        return          # nothing to sweep; the thread would burn CPU and SSE for nothing
     with _scan_lock:
         scan_active = enabled
         if enabled and (_scan_thread is None or not _scan_thread.is_alive()):
@@ -219,7 +261,9 @@ def logout():
 @app.route("/")
 @login_required
 def index():
-    return render_template("index.html")
+    # The template needs this at render time, not after /position resolves —
+    # otherwise the pan/tilt controls flash up before being removed.
+    return render_template("index.html", pantilt=_pantilt_state())
 
 
 @app.route("/limits")
@@ -235,11 +279,17 @@ def limits():
 @login_required
 def position():
     with lock:
-        return jsonify({**state, "hardware": HARDWARE, "scan": scan_active})
+        return jsonify({
+            **state,
+            "hardware": HARDWARE,          # kept for older clients
+            "pantilt":  _pantilt_state(),
+            "scan":     scan_active,
+        })
 
 
 @app.route("/scan", methods=["POST"])
 @login_required
+@pantilt_required
 def scan():
     enabled = bool(request.json.get("enabled", False))
     _set_scan(enabled)
@@ -248,6 +298,7 @@ def scan():
 
 @app.route("/move", methods=["POST"])
 @login_required
+@pantilt_required
 def move():
     global scan_active
     scan_active = False          # any manual move cancels the scan
@@ -270,6 +321,7 @@ def move():
 
 @app.route("/goto", methods=["POST"])
 @login_required
+@pantilt_required
 def goto():
     global scan_active
     scan_active = False
@@ -283,6 +335,7 @@ def goto():
 
 @app.route("/home", methods=["POST"])
 @login_required
+@pantilt_required
 def home():
     global scan_active
     scan_active = False
@@ -300,6 +353,7 @@ def get_presets():
 
 @app.route("/presets", methods=["POST"])
 @login_required
+@pantilt_required
 def save_preset():
     name = request.json.get("name", "").strip()
     if not name:

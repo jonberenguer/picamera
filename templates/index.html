@@ -92,6 +92,15 @@
       50%      { box-shadow: 0 0 0 5px rgba(34,211,238,0); }
     }
 
+    /* Fixed camera: no HAT, so the pan/tilt surface never paints. The nodes
+       stay in the DOM until init() removes them, which keeps the parse-time
+       getElementById lookups below from throwing. */
+    body.no-pantilt #controls,
+    body.no-pantilt #presets-bar,
+    body.no-pantilt #drag-hint,
+    body.no-pantilt #scan-btn,
+    body.no-pantilt #home-btn { display: none !important; }
+
     .hw-badge {
       font-size: 9px;
       font-weight: 600;
@@ -513,7 +522,7 @@
     }
   </style>
 </head>
-<body>
+<body{% if not pantilt.available %} class="no-pantilt"{% endif %}>
 
 <header>
   <div class="live-dot" id="live-dot"></div>
@@ -579,7 +588,7 @@
   </div>
 </div>
 
-<div class="controls">
+<div class="controls" id="controls">
 
   <div class="dpad">
     <button class="dpad-btn up"    data-dir="up"    title="Tilt up (↑)">
@@ -625,7 +634,7 @@
 
 </div>
 
-<div class="presets-bar">
+<div class="presets-bar" id="presets-bar">
   <div class="presets-slots" id="presets-slots"></div>
 </div>
 
@@ -666,6 +675,24 @@
   let limits      = { pan: { min: -90, max: 90 }, tilt: { min: -90, max: 90 } };
 
   // ── Position display ──────────────────────────────────────────────────────
+  // Set from /position at startup. When there is no HAT the whole pan/tilt
+  // surface is removed rather than left in place doing nothing, so every
+  // movement path checks this before touching the network.
+  let panTiltAvailable = {{ 'true' if pantilt.available else 'false' }};
+
+  function applyFixedCameraMode(reason) {
+    panTiltAvailable = false;
+    scanActive = false;
+    ['controls', 'presets-bar', 'drag-hint', 'scan-btn', 'home-btn']
+      .forEach(id => { const el = document.getElementById(id); if (el) el.remove(); });
+    const badge = document.getElementById('hw-badge');
+    badge.textContent = 'fixed camera';
+    if (reason) badge.title = reason;
+  }
+
+  // Decided server-side, so this does not wait on /position and cannot flash.
+  if (!panTiltAvailable) applyFixedCameraMode({{ pantilt.reason | tojson }});
+
   function updatePosition(pan, tilt) {
     document.getElementById('pan-val').textContent  = pan  + '°';
     document.getElementById('tilt-val').textContent = tilt + '°';
@@ -718,6 +745,7 @@
 
   // ── Scan ──────────────────────────────────────────────────────────────────
   function setScanUI(active) {
+    if (!panTiltAvailable) return;
     scanActive = active;
     const btn = document.getElementById('scan-btn');
     btn.classList.toggle('scanning', active);
@@ -739,6 +767,7 @@
 
   // ── Move ──────────────────────────────────────────────────────────────────
   async function move(direction, step) {
+    if (!panTiltAvailable) return;
     if (scanActive) setScanUI(false);
     if (busy) return;
     busy = true;
@@ -756,6 +785,7 @@
   }
 
   async function goTo(pan, tilt) {
+    if (!panTiltAvailable) return;
     if (scanActive) setScanUI(false);
     try {
       await fetch('/goto', {
@@ -801,6 +831,7 @@
   }
 
   function startHold(dir) {
+    if (!panTiltAvailable) return;
     stopHold();
     holdDir   = dir;
     holdStart = Date.now();
@@ -833,6 +864,7 @@
   const keyMap = { ArrowUp:'up', ArrowDown:'down', ArrowLeft:'left', ArrowRight:'right' };
 
   document.addEventListener('keydown', e => {
+    if (!panTiltAvailable) return;
     if (e.key === 'Escape') {
       if (scanActive) {
         setScanUI(false);
@@ -848,6 +880,7 @@
   });
 
   document.addEventListener('keyup', e => {
+    if (!panTiltAvailable) return;
     if (keyMap[e.key]) stopHold();
   });
 
@@ -858,6 +891,7 @@
   let drag = null;
 
   feedWrap.addEventListener('pointerdown', e => {
+    if (!panTiltAvailable) return;
     if (e.target.closest('button')) return;
     drag = { lastX: e.clientX, lastY: e.clientY, accX: 0, accY: 0 };
     feedWrap.setPointerCapture(e.pointerId);
@@ -867,6 +901,7 @@
   });
 
   feedWrap.addEventListener('pointermove', e => {
+    if (!panTiltAvailable) return;
     if (!drag) return;
     drag.accX += e.clientX - drag.lastX;
     drag.accY += e.clientY - drag.lastY;
@@ -1057,6 +1092,7 @@
 
   function renderPresets() {
     const container = document.getElementById('presets-slots');
+    if (!container) return;
     container.innerHTML = SLOT_KEYS.map(key => {
       const pos    = presetsData[key];
       const filled = !!pos;
@@ -1159,12 +1195,21 @@
       ]);
       if (limRes.ok)     limits = await limRes.json();
       if (posRes.ok) {
-        const d = await posRes.json();
-        updatePosition(d.pan, d.tilt);
-        if (d.scan) setScanUI(true);
-        document.getElementById('hw-badge').textContent = d.hardware ? 'HAT ready' : 'no HAT';
+        const d  = await posRes.json();
+        // `pantilt` is newer than `hardware`; fall back so an older server still works
+        const pt = d.pantilt || { available: d.hardware, reason: '' };
+        if (pt.available) {
+          updatePosition(d.pan, d.tilt);
+          if (d.scan) setScanUI(true);
+          document.getElementById('hw-badge').textContent = 'HAT ready';
+        } else {
+          applyFixedCameraMode(pt.reason);
+        }
       }
-      if (presetsRes.ok) { presetsData = await presetsRes.json(); renderPresets(); }
+      if (presetsRes.ok && panTiltAvailable) {
+        presetsData = await presetsRes.json();
+        renderPresets();
+      }
     } catch (_) {}
 
     setTimeout(() => { dragHint.style.opacity = '0'; }, 4000);
