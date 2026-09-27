@@ -305,6 +305,12 @@ All routes except `/login`, `/logout`, `/manifest.json`, `/sw.js`, `/motion-even
 
 Edit `motion.env` and re-run `sudo ./install.sh` to apply changes.
 
+`motion.env` is the only file you are expected to edit, and on a real install it holds
+values specific to that machine — NFS server and export, camera name, credentials. Those
+are normally left uncommitted, so **do not copy a checkout's `motion.env` over a
+configured one**: it reverts `NFS_ENABLED` to `false` and blanks the server details, which
+presents as the NAS having disappeared.
+
 ### Pan/tilt
 
 | Variable | Default | Description |

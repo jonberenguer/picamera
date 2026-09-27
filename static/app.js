@@ -317,6 +317,10 @@ feedWrap.addEventListener('touchend', () => { pinchDist0 = null; });
 
 // ── Gallery ───────────────────────────────────────────────────────────────
 let galleryFiles = [];
+let selectMode   = false;
+const selected   = new Set();   // capture paths, not indices: survives a reload
+
+const CHECK_ICON = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5"><polyline points="20 6 9 17 4 12"/></svg>`;
 
 const VIDEO_ICON = `<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M10 8l6 4-6 4z" fill="currentColor"/></svg>`;
 
@@ -326,7 +330,10 @@ const esc = v => String(v).replace(/[&<>"']/g, c =>
 // Paths are "<source>/<relative path>" — encode each segment, keep the slashes
 const mediaUrl = path => '/gallery/' + path.split('/').map(encodeURIComponent).join('/');
 
+let currentItem = null;
+
 function openGallery() {
+  setSelectMode(false);
   document.getElementById('gallery-overlay').classList.add('open');
   showGalleryGrid();
   loadGallery();
@@ -363,14 +370,115 @@ function renderGalleryGrid() {
       ? `<div class="thumb-poster">${esc(f.name)}</div><div class="thumb-video">${VIDEO_ICON}</div>`
       : `<img src="${esc(mediaUrl(f.path))}" loading="lazy" alt="">`;
     const tag = f.source === 'buffer' ? '<span class="thumb-tag buffer">pending</span>' : '';
-    return `<div class="gallery-thumb" data-idx="${i}">${body}${tag}</div>`;
+    const on  = selected.has(f.path) ? ' selected' : '';
+    return `<div class="gallery-thumb${on}" data-idx="${i}">${body}${tag}`
+         + `<div class="thumb-check">${CHECK_ICON}</div></div>`;
   }).join('');
   grid.querySelectorAll('.gallery-thumb').forEach(t =>
-    t.addEventListener('click', () => showGalleryItem(Number(t.dataset.idx)))
+    t.addEventListener('click', () => {
+      const idx = Number(t.dataset.idx);
+      if (selectMode) toggleSelect(idx, t); else showGalleryItem(idx);
+    })
   );
+  grid.classList.toggle('selecting', selectMode);
+  updateSelectionUI();
 }
 
+// ── Multi-select ──────────────────────────────────────────────────────────
+function setSelectMode(on) {
+  selectMode = on;
+  if (!on) selected.clear();
+  document.getElementById('gallery-select-btn').classList.toggle('selecting', on);
+  document.getElementById('gallery-actions').classList.toggle('open', on);
+  document.getElementById('gallery-grid').classList.toggle('selecting', on);
+  if (!on) document.querySelectorAll('.gallery-thumb.selected')
+                   .forEach(t => t.classList.remove('selected'));
+  updateSelectionUI();
+}
+
+function toggleSelect(idx, el) {
+  const f = galleryFiles[idx];
+  if (!f) return;
+  if (selected.has(f.path)) { selected.delete(f.path); el.classList.remove('selected'); }
+  else                      { selected.add(f.path);    el.classList.add('selected'); }
+  updateSelectionUI();
+}
+
+function updateSelectionUI() {
+  const n = selected.size;
+  const count = document.getElementById('sel-count');
+  if (count) count.textContent = n === 0 ? 'none selected' : `${n} selected`;
+  ['sel-dl-btn', 'sel-del-btn'].forEach(id => {
+    const b = document.getElementById(id);
+    if (b) b.disabled = n === 0;
+  });
+  const all = document.getElementById('sel-all-btn');
+  if (all) all.textContent = (n && n === galleryFiles.length) ? 'None' : 'All';
+}
+
+document.getElementById('gallery-select-btn').addEventListener('click', () => {
+  setSelectMode(!selectMode);
+});
+
+document.getElementById('sel-cancel-btn').addEventListener('click', () => setSelectMode(false));
+
+document.getElementById('sel-all-btn').addEventListener('click', () => {
+  const pickAll = selected.size !== galleryFiles.length;
+  selected.clear();
+  if (pickAll) galleryFiles.forEach(f => selected.add(f.path));
+  document.querySelectorAll('.gallery-thumb').forEach(t =>
+    t.classList.toggle('selected', selected.has(galleryFiles[Number(t.dataset.idx)]?.path)));
+  updateSelectionUI();
+});
+
+// A form POST, not fetch(): the browser streams the zip straight to disk
+// instead of the page holding the whole bundle in memory.
+function downloadPaths(paths) {
+  if (!paths.length) return;
+  const form = document.createElement('form');
+  form.method = 'POST';
+  form.action = '/gallery-download';
+  form.style.display = 'none';
+  paths.forEach(p => {
+    const i = document.createElement('input');
+    i.type = 'hidden'; i.name = 'path'; i.value = p;
+    form.appendChild(i);
+  });
+  document.body.appendChild(form);
+  form.submit();
+  setTimeout(() => form.remove(), 1000);
+}
+
+async function deletePaths(paths) {
+  if (!paths.length) return;
+  const what = paths.length === 1 ? 'this capture' : `${paths.length} captures`;
+  if (!confirm(`Delete ${what}? This cannot be undone.`)) return;
+  try {
+    const res = await fetch('/gallery-delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths })
+    });
+    if (!res.ok) { alert('Delete failed.'); return; }
+    const out = await res.json();
+    out.deleted.forEach(p => selected.delete(p));
+    if (out.failed.length) {
+      alert(`${out.deleted.length} deleted, ${out.failed.length} could not be removed.`);
+    }
+    await loadGallery();
+  } catch (_) {
+    alert('Delete failed.');
+  }
+}
+
+document.getElementById('sel-dl-btn').addEventListener('click',
+  () => downloadPaths([...selected]));
+document.getElementById('sel-del-btn').addEventListener('click',
+  () => deletePaths([...selected]));
+
 function showGalleryGrid() {
+  document.getElementById('gallery-del-btn').style.display = 'none';
+  document.getElementById('gallery-select-btn').style.display = '';
   const video = document.getElementById('gallery-viewer-video');
   video.pause();
   video.removeAttribute('src');
@@ -386,7 +494,11 @@ function showGalleryGrid() {
 function showGalleryItem(idx) {
   const f = galleryFiles[idx];
   if (!f) return;
+  currentItem = f;
   const url   = mediaUrl(f.path);
+  // Selecting is a grid-level action; hide the toggle while previewing one item
+  document.getElementById('gallery-select-btn').style.display = 'none';
+  document.getElementById('gallery-del-btn').style.display = '';
   const img   = document.getElementById('gallery-viewer-img');
   const video = document.getElementById('gallery-viewer-video');
 
@@ -413,6 +525,14 @@ function showGalleryItem(idx) {
     img.src = url;
   }
 }
+
+document.getElementById('gallery-del-btn').addEventListener('click', async () => {
+  if (!currentItem) return;
+  const path = currentItem.path;
+  await deletePaths([path]);
+  // Only leave the preview if it really went
+  if (!galleryFiles.some(f => f.path === path)) showGalleryGrid();
+});
 
 document.getElementById('gallery-btn').addEventListener('click', openGallery);
 document.getElementById('gallery-close-btn').addEventListener('click', closeGallery);

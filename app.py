@@ -1,6 +1,9 @@
 import os
 import math
 import hashlib
+import logging
+import tempfile
+import zipfile
 import json
 import queue
 import time
@@ -38,6 +41,8 @@ DEFAULT_STEP = 5
 PRESETS_FILE      = Path(os.environ.get("PRESETS_FILE", "/opt/picam/presets.json"))
 MOTION_TARGET_DIR = Path(os.environ.get("MOTION_TARGET_DIR", "/var/lib/motion"))
 GALLERY_LIMIT     = max(1, int(os.environ.get("GALLERY_LIMIT", 200)))
+# Cap on a single zip bundle, so select-all cannot fill the SD card
+ZIP_MAX_BYTES     = max(1, int(os.environ.get("ZIP_MAX_MB", 512))) * 1024 * 1024
 
 # ── Startup position ───────────────────────────────────────────────────────────
 
@@ -113,6 +118,14 @@ def _asset_version(name):
 
 ASSETS = {name: _asset_version(name)
           for name in ("base.css", "app.css", "app.js", "login.css")}
+
+# ── Logging ────────────────────────────────────────────────────────────────────
+
+# Flask leaves app.logger at NOTSET, so it inherits root's WARNING and every
+# info() is dropped. That silently cost us the uploader's status lines and, worse,
+# the audit trail for gallery deletions. Make INFO the floor.
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+app.logger.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
 
 state = {"pan": _pan_start, "tilt": _tilt_start}
 lock  = threading.Lock()
@@ -626,26 +639,153 @@ def gallery_list():
     return jsonify(entries[:GALLERY_LIMIT])
 
 
-@app.route("/gallery/<path:relpath>")
-@login_required
-def gallery_file(relpath):
+def _prune_empty_dirs(start, stop):
+    """Walk up from `start` removing empty directories, never past `stop`.
+
+    Deleting the last capture of a day otherwise leaves an empty YYYY/MM/DD
+    behind on the share forever. rmdir only succeeds on an empty directory, so
+    this cannot take anything that still holds captures.
+    """
+    d = start
+    while d != stop and d.is_relative_to(stop):
+        try:
+            d.rmdir()
+        except OSError:
+            return
+        d = d.parent
+
+
+def _resolve_capture(relpath):
+    """Map a client-supplied "<source>/<relative path>" onto a real capture.
+
+    Returns None for anything that is not a media file inside one of the gallery
+    roots. Every route that touches a capture goes through here — fetch, delete
+    and zip — so the containment check exists in exactly one place.
+    """
+    if not isinstance(relpath, str):
+        return None
     source, _, rest = relpath.partition("/")
     root = _gallery_roots().get(source)
     if root is None or not rest:
-        return "", 404
-
-    # Resolve then confirm containment — `rest` comes straight from the client.
+        return None
     try:
         base   = root.resolve()
         target = (base / rest).resolve()
         if not target.is_relative_to(base) or not target.is_file():
-            return "", 404
+            return None
     except OSError:
-        return "", 404
-
+        return None
     if uploader.kind_for(target) is None:
+        return None
+    return target
+
+
+@app.route("/gallery/<path:relpath>")
+@login_required
+def gallery_file(relpath):
+    target = _resolve_capture(relpath)
+    if target is None:
         return "", 404
     return send_file(target, conditional=True)
+
+
+@app.route("/gallery-delete", methods=["POST"])
+@login_required
+def gallery_delete():
+    """Delete one or more captures.
+
+    Deliberately bulk-only: the preview's single delete posts a one-item list,
+    so there is one path-resolution and one unlink to get right instead of two.
+    """
+    paths = (request.get_json(silent=True) or {}).get("paths")
+    if not isinstance(paths, list) or not paths:
+        return jsonify({"error": "paths required"}), 400
+    if len(paths) > GALLERY_LIMIT:
+        return jsonify({"error": f"at most {GALLERY_LIMIT} at a time"}), 400
+
+    roots = _gallery_roots()
+    deleted, failed = [], []
+    for rel in paths:
+        target = _resolve_capture(rel)
+        if target is None:
+            failed.append({"path": rel, "error": "not found"})
+            continue
+        try:
+            target.unlink()
+            deleted.append(rel)
+        except OSError as e:
+            failed.append({"path": rel, "error": e.strerror or "could not delete"})
+            continue
+        root = roots.get(rel.partition("/")[0])
+        if root is not None:
+            try:
+                _prune_empty_dirs(target.parent, root.resolve())
+            except OSError:
+                pass
+
+    if deleted:
+        shown = ", ".join(deleted[:10]) + (" …" if len(deleted) > 10 else "")
+        app.logger.info("gallery: deleted %d capture(s): %s", len(deleted), shown)
+    if failed:
+        app.logger.warning("gallery: %d deletion(s) refused", len(failed))
+    return jsonify({"deleted": deleted, "failed": failed})
+
+
+@app.route("/gallery-download", methods=["POST"])
+@login_required
+def gallery_download():
+    """Bundle several captures into one zip.
+
+    Driven by a form POST rather than fetch(), so the browser streams the result
+    straight to disk instead of holding the whole bundle in page memory.
+    ZIP_STORED because JPEG and MKV are already compressed — deflating them
+    costs CPU on a Pi and saves almost nothing.
+    """
+    rels = request.form.getlist("path")
+    if not rels:
+        return "no paths given", 400
+    if len(rels) > GALLERY_LIMIT:
+        return f"at most {GALLERY_LIMIT} at a time", 400
+
+    targets, total = [], 0
+    for rel in rels:
+        target = _resolve_capture(rel)
+        if target is None:
+            continue
+        try:
+            total += target.stat().st_size
+        except OSError:
+            continue
+        # Bounded so a careless select-all cannot fill the SD card with a temp file
+        if total > ZIP_MAX_BYTES:
+            return "selection too large to bundle", 413
+        targets.append((rel, target))
+
+    if not targets:
+        return "nothing to download", 404
+
+    tmp = tempfile.NamedTemporaryFile(prefix="picam-", suffix=".zip", delete=False)
+    try:
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED) as z:
+            for rel, target in targets:
+                # Keep the YYYY/MM/DD structure; drops the "<source>/" prefix
+                z.write(target, arcname=rel.partition("/")[2] or target.name)
+        tmp.flush()
+        # Unlink while the handle is still open: the data stays readable until
+        # send_file closes it, and nothing is left behind on any exit path.
+        os.unlink(tmp.name)
+        tmp.seek(0)
+    except Exception:
+        tmp.close()
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+        raise
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return send_file(tmp, mimetype="application/zip", as_attachment=True,
+                     download_name=f"picam-{stamp}.zip")
 
 
 if __name__ == "__main__":

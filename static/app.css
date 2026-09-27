@@ -493,3 +493,74 @@ body.no-pantilt #home-btn { display: none !important; }
   max-width: 100%; max-height: 100%;
   object-fit: contain; border-radius: 6px;
 }
+
+/* ── Gallery selection ───────────────────────────────── */
+/* A tick box appears on every tile only while selecting, so the normal
+   browse-and-tap path is completely unchanged when not in select mode. */
+.gallery-thumb .thumb-check {
+  position: absolute; top: 5px; right: 5px;
+  width: 20px; height: 20px;
+  border: 1.5px solid rgba(255,255,255,0.55);
+  border-radius: 50%;
+  background: rgba(0,0,0,0.45);
+  display: none;
+  align-items: center; justify-content: center;
+  color: var(--bg);
+  pointer-events: none;
+}
+.gallery-grid.selecting .thumb-check { display: flex; }
+.gallery-grid.selecting .gallery-thumb.selected .thumb-check {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.gallery-grid.selecting .gallery-thumb.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+.thumb-check svg { display: none; }
+.gallery-thumb.selected .thumb-check svg { display: block; }
+
+.icon-btn.danger:hover  { border-color: var(--danger); color: var(--danger); }
+.icon-btn.selecting {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.gallery-actions {
+  display: none;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+  padding: 9px 14px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+}
+.gallery-actions.open { display: flex; }
+
+.sel-count {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.sel-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 6px 11px;
+  cursor: pointer;
+  color: var(--text-muted);
+  transition: background 0.1s, border-color 0.1s, color 0.1s;
+  white-space: nowrap;
+}
+.sel-btn:hover           { border-color: var(--accent); color: var(--accent); }
+.sel-btn.danger:hover    { border-color: var(--danger); color: var(--danger); }
+.sel-btn:disabled        { opacity: 0.3; cursor: default; pointer-events: none; }

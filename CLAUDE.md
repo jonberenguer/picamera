@@ -59,6 +59,11 @@ Data flow:
   A new static asset must be added to that dict, and to `SHELL` in `sw.js` or it will not
   be there offline.
 - `motion.env` — the single source of truth for all tunables (pan/tilt, auth, camera, NFS).
+  **On a real installation this file holds machine-specific values that are deliberately
+  not committed** (NFS server address and export, camera name, credentials). Never copy the
+  repo's `motion.env` over a deployed one: doing so silently reverts `NFS_ENABLED` to
+  `false` and blanks the server details, which then looks like the NAS having gone away.
+  Deploy code files, and edit `motion.env` in place on the target.
 - `requirements.txt` — core deps only. `pantilthat` is deliberately absent: it is useless
   without the HAT, and `install.sh` pip-installs it unless `PANTILT_ENABLED=off`.
 - `motion-stream-only.env` — a complete swappable alternative to `motion.env` (live stream,
@@ -92,6 +97,14 @@ Two rules govern `uploader.py`, and breaking either one is how this goes wrong:
    real `nfs*` filesystem — `os.path.ismount()` would report an idle automount stub as
    mounted, and a bare existence check would silently write captures into the empty local
    mountpoint on the SD card.
+   **But observing is not enough: the worker must also trigger.** An idle `.automount`
+   appears as `autofs`, and systemd only mounts the real filesystem when something touches
+   the path. Checking `/proc/mounts` alone deadlocks — the mount waits for an access that
+   never comes, so the offload works only in the window after some unrelated process
+   happens to `ls` the directory, then stalls again when `TimeoutIdleSec` unmounts it. This
+   shipped once and presented as an intermittent NAS problem. `ensure_mounted()` does the
+   touch, and it is only safe there because it runs on the worker thread with `soft` mount
+   options. Never call it from a request path.
 2. **The buffer directory is the queue.** The in-memory `queue.Queue` is only a fast path;
    the periodic sweep rescans the buffer, so a Flask restart, a missed hook or a failed
    upload all recover on their own. There is deliberately no persisted work list.
