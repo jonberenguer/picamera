@@ -45,7 +45,6 @@ UPLOAD_RETRY_MAX      = max(UPLOAD_RETRY_MIN, int(os.environ.get("UPLOAD_RETRY_M
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 VIDEO_SUFFIXES = {".mkv", ".mp4", ".avi", ".webm", ".mov", ".flv", ".swf", ".m4v"}
-MEDIA_SUFFIXES = IMAGE_SUFFIXES | VIDEO_SUFFIXES
 
 COPY_CHUNK = 1024 * 1024
 
@@ -88,17 +87,28 @@ def nfs_is_mounted(mount):
     return False
 
 
-def usage_pct(path):
-    """Percentage of `path`'s filesystem in use, or None if it cannot be read."""
+def ensure_mounted(mount):
+    """Make sure the archive is mounted, triggering a systemd automount if needed.
+
+    An idle `.automount` appears in /proc/mounts as `autofs`, not `nfs`, and it
+    only mounts the real filesystem when something *touches* the path. Checking
+    /proc/mounts alone therefore never sees it: the mount is waiting for an
+    access that never comes, so the offload stalls until some unrelated process
+    happens to look in the directory — and stalls again once TimeoutIdleSec
+    unmounts it.
+
+    Touching the path is what breaks that deadlock. It is safe only because this
+    runs on the worker thread and the mount options are `soft`: against a dead
+    server it returns an error after the mount unit's TimeoutSec rather than
+    blocking forever, and no request thread is waiting on it.
+    """
+    if nfs_is_mounted(mount):
+        return True
     try:
-        st = os.statvfs(str(path))
+        os.listdir(mount)
     except OSError:
-        return None
-    total = st.f_blocks * st.f_frsize
-    if total <= 0:
-        return None
-    free = st.f_bavail * st.f_frsize
-    return round((total - free) / total * 100, 1)
+        pass
+    return nfs_is_mounted(mount)
 
 
 def _space(path):
@@ -254,13 +264,18 @@ class Uploader:
             return
         if not path.exists():
             return
-        if not nfs_is_mounted(NFS_MOUNT):
+        if not ensure_mounted(NFS_MOUNT):
             self._fail(f"{NFS_MOUNT} is not an NFS mount")
             return
         self._upload(path)
 
     def _upload(self, src):
-        st       = src.stat()
+        try:
+            st = src.stat()
+        except FileNotFoundError:
+            # Deleted from the buffer while it sat in the queue — the gallery can
+            # now do that. Not a failure; nothing to archive.
+            return
         stamp    = datetime.fromtimestamp(st.st_mtime)
         dest_dir = NFS_MOUNT / NFS_SUBDIR / CAMERA_NAME / stamp.strftime("%Y/%m/%d")
         dest_dir.mkdir(parents=True, exist_ok=True)
@@ -307,7 +322,7 @@ class Uploader:
     # ── Sweep: rescan, retry, and protect the tmpfs ───────────────────────────
 
     def _sweep(self):
-        mounted = nfs_is_mounted(NFS_MOUNT) if NFS_ENABLED else False
+        mounted = ensure_mounted(NFS_MOUNT) if NFS_ENABLED else False
         buf     = _space(BUFFER_DIR)
         files   = self._buffer_files()
 
