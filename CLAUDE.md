@@ -158,7 +158,20 @@ enqueue pass.
 
 ## Running and testing
 
-There are no tests and no linter config. On a dev machine:
+```bash
+./tests/run.sh          # everything: static checks + 4 suites, no Pi or hardware needed
+```
+
+It builds `.testvenv/` on first use. The suites live in `tests/` and cover the automount
+trigger, both NFS offload paths, and the gallery delete/zip endpoints including the
+path-traversal defences. They monkeypatch `nfs_is_mounted`/`ensure_mounted`, so no real
+NFS server is involved.
+
+**The suites take no path argument, and must never be given one.** An earlier version
+accepted a scratch directory, was handed an empty string, resolved `Path("")` to `.` and
+`rmtree`'d the repository. They now always create their own temp directory.
+
+Also on a dev machine:
 
 ```bash
 python3 -m venv venv && ./venv/bin/pip install flask requests
