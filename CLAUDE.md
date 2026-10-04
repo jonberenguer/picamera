@@ -58,19 +58,24 @@ Data flow:
   when the file really changes and a reinstall that touches nothing keeps caches warm.
   A new static asset must be added to that dict, and to `SHELL` in `sw.js` or it will not
   be there offline.
-- `motion.env` — the single source of truth for all tunables (pan/tilt, auth, camera, NFS).
-  **On a real installation this file holds machine-specific values that are deliberately
-  not committed** (NFS server address and export, camera name, credentials). Never copy the
-  repo's `motion.env` over a deployed one: doing so silently reverts `NFS_ENABLED` to
-  `false` and blanks the server details, which then looks like the NAS having gone away.
-  Deploy code files, and edit `motion.env` in place on the target.
+- `motion.env` — tracked defaults for every tunable (pan/tilt, auth, camera, NFS).
+- `motion.env.local` — optional, gitignored, and **where anything machine-specific goes**
+  (NFS server and export, camera name, credentials). `install.sh` reads `motion.env` then
+  this file, last assignment winning, so a single key here overrides just that key. It
+  exists because copying a checkout's `motion.env` over a configured install reverted
+  `NFS_ENABLED` to `false` and blanked the server address, and the result looked like the
+  NAS had gone away. With the overlay, `motion.env` is safe to deploy.
+  `merged_env()` in `install.sh` produces the combined set; use it rather than grepping
+  `motion.env` directly, or the overlay gets silently bypassed — that applies to the early
+  `PANTILT_ENABLED` peek as much as to `/etc/picam.env`.
 - `requirements.txt` — core deps only. `pantilthat` is deliberately absent: it is useless
   without the HAT, and `install.sh` pip-installs it unless `PANTILT_ENABLED=off`.
 - `motion-stream-only.env` — a complete swappable alternative to `motion.env` (live stream,
-  nothing saved). Any variant must carry **every** section: `install.sh` reads only
-  `motion.env`, and a fragment missing `AUTH_USER`/`AUTH_PASS` silently disables the login.
-  Keep it byte-identical to `motion.env` apart from the capture settings, so a diff of the
-  two is self-documenting.
+  nothing saved). Any variant must carry **every** section: `install.sh` only reads
+  `motion.env` and `motion.env.local`, so a variant is used by copying it over `motion.env`,
+  and one missing `AUTH_USER`/`AUTH_PASS` silently disables the login. Keep it
+  byte-identical to `motion.env` apart from the capture settings, so a diff of the two is
+  self-documenting. Note that `motion.env.local` still overrides a variant.
 - `install.sh` — root installer, with `--dry-run` (no root needed) and `--uninstall`.
   Parses `motion.env`, rewrites `/etc/motion/motion.conf`, writes `/etc/picam.env`,
   generates the mount units, copies to `/opt/picam`, builds the venv, restarts everything.
@@ -141,6 +146,16 @@ enqueue pass.
   something that is not on disk.
 - All angles are clamped through `clamp()` against the soft limits before reaching the
   hardware. Never write to `pantilthat` outside `_apply()`.
+- **Absolute moves are eased, incremental ones are not.** `/goto` and `/home` go through
+  `_goto()`, which steps the angle at `GOTO_SPEED` degrees/second on its own thread: a bare
+  `pantilthat.pan()` slews at full speed and the jolt can shift the whole rig on a smooth
+  surface. `/move` stays instant, because the d-pad is held and latency there feels broken.
+  Anything that drives the servo must call `_cancel_glide()` first, or it will fight a
+  preset still travelling — `/move`, `/scan` and `_goto()` itself all do.
+  `_glide_worker()` stops as soon as a step produces no change, which is what guarantees it
+  terminates when a soft limit blocks the remaining travel rather than spinning.
+  `/goto` and `/home` return the **target**, not the current angle, plus `gliding`; the live
+  position keeps arriving over SSE as each step calls `_apply()`.
 - **The HAT is optional and that is a supported mode, not a degraded one.** `HARDWARE` is
   `False` when `PANTILT_ENABLED=off` or the HAT does not answer; the app then runs as a
   fixed camera. Any new movement route needs `@pantilt_required` (returns `409`) — never
@@ -199,10 +214,18 @@ on a running Pi.
   the worker also holds.
 - The SSE queues are `maxsize=10`; a client that stalls gets dropped from `_sse_clients`
   rather than blocking `_push_sse`.
-- `/gallery` returns objects, not filenames: `{path, name, kind, source, ts, size}` where
-  `path` is `"<source>/<relative path>"` and source is `buffer` or `archive`. The archive
-  walk descends newest-first through `YYYY/MM/DD` and stops at `GALLERY_LIMIT` rather than
-  doing a full recursive walk, which would get slower every day.
+- `/gallery` is paged: `{"entries": [...], "next": {before, before_path} | null}`. Each
+  entry is `{path, name, kind, source, ts, size}` with `path` of the form
+  `"<source>/<relative path>"`, source `buffer` or `archive`. `GALLERY_LIMIT` is the page
+  size, not a hard ceiling on what is reachable.
+  Paging is **keyset, not offset**: captures arrive and are deleted while someone browses,
+  so an offset would skip or repeat rows as the list shifted. The order is `(-ts, path)` —
+  path breaks ties, because two captures in the same second would otherwise be dropped or
+  repeated at a page boundary. `_after_cursor()` is the single predicate for "comes after";
+  use it rather than comparing timestamps inline.
+  The archive walk descends newest-first through `YYYY/MM/DD` and, when a cursor is given,
+  skips whole day directories newer than it **by name, without listing them**. Without that
+  every page would re-list the days it had already returned, making deep paging O(pages²).
 - `MOTION_TARGET_DIR` is a tmpfs mount unit generated by `install.sh` via `systemd-escape`.
   Anything still in it at reboot is gone. `MOTION_MOVIE_OUTPUT` is still `off` by default;
   the gallery and uploader already handle video, so turning it on is all that is needed.

@@ -22,6 +22,11 @@ run "automount trigger"    tests/test_automount.py
 run "offload (NFS on)"     tests/test_offload.py on
 run "offload (NFS off)"    tests/test_offload.py off
 run "gallery delete + zip" tests/test_gallery_ops.py
+run "gallery paging"       tests/test_gallery_paging.py
+run "goto easing (fast)"   tests/test_goto_easing.py 450
+run "goto easing (slow)"   tests/test_goto_easing.py 45
+run "goto easing (off)"    tests/test_goto_easing.py 0
+printf '  %-34s ' "env overlay"; ./tests/test_env_overlay.sh >/dev/null 2>&1 && echo PASS || { echo FAIL; fail=1; }
 
 echo
 [[ $fail -eq 0 ]] && echo "all green" || echo "FAILURES — rerun a suite directly to see which check"
