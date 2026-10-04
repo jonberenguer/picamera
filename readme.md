@@ -138,6 +138,7 @@ sudo journalctl -u caddy        -f
 - **Digital zoom** — +/− buttons overlay the feed to cycle through 1×, 1.5×, 2×, 2.5×, and 3× zoom levels; pinch-to-zoom on touch devices
 - **Auto-scan** — sweeps the pan axis back and forth using a sine wave; speed set by `SCAN_SPEED`; any manual move cancels it
 - **Home button** — returns to the startup position (`PAN_START` / `TILT_START`)
+- **Eased preset travel** — jumping to a saved position or Home ramps the servos at `GOTO_SPEED` degrees/second instead of slewing at full speed, which stops the jolt from shifting the unit on a smooth surface. The d-pad stays instant. Any manual move, or starting auto-scan, takes over from a preset still travelling
 - **Snapshot button** — downloads the current frame as a timestamped JPEG
 - **Motion gallery** — grid button opens a full-screen overlay showing the most recent captures from both the buffer and the NFS archive, newest first; images open full-size, movies play inline, and the download button saves either. Captures still waiting to be archived are tagged `pending`
 - **Storage badge** — shows `NAS ok`, `NAS n queued`, or a red `NAS down` when offload is enabled, and `BUF <n>%` (red past 60%) when it is not; hover for the archive path, buffer usage, and upload counts
@@ -187,10 +188,11 @@ cp motion-stream-only.env motion.env
 sudo ./install.sh
 ```
 
-Any such variant must be a **complete** file, not a fragment. `install.sh` only ever reads
-`motion.env`, and the `FLASK_VARS` filter that builds `/etc/picam.env` would find no
-`AUTH_USER`/`AUTH_PASS` in a partial file — silently disabling the login and exposing the
-UI to everyone on the network.
+Any such variant must be a **complete** file, not a fragment. `install.sh` reads only
+`motion.env` and `motion.env.local`, so a variant is used by copying it over `motion.env`.
+The `FLASK_VARS` filter that builds `/etc/picam.env` would find no `AUTH_USER`/`AUTH_PASS`
+in a partial file — silently disabling the login and exposing the UI to everyone on the
+network. Your `motion.env.local` still applies on top of whichever variant is in place.
 
 ## Storage and NFS offload
 
@@ -285,12 +287,12 @@ All routes except `/login`, `/logout`, `/manifest.json`, `/sw.js`, `/motion-even
 | `GET` | `/position` | — | `{"pan": 0, "tilt": 0, "hardware": true, "scan": false, "pantilt": {"available", "mode", "reason"}}` |
 | `GET` | `/limits` | — | `{"pan": {"min": -90, "max": 90}, "tilt": {"min": -90, "max": 90}}` |
 | `GET` | `/events` | — | SSE stream — pushes `{"pan", "tilt"}` on every move and `event: motion` on detection |
-| `GET` | `/gallery` | — | Most recent captures from the buffer and the NFS archive, newest first: `[{"path": "archive/2026/09/22/x.jpg", "name", "kind", "source", "ts", "size"}]` |
+| `GET` | `/gallery` | `?limit=`, `?before=`, `?before_path=` | One page of captures, newest first: `{"entries": [{"path": "archive/2026/09/22/x.jpg", "name", "kind", "source", "ts", "size"}], "next": {"before", "before_path"} \| null}`. Pass `next` back to fetch the following page; `null` means the end. |
 | `GET` | `/gallery/<source>/<path>` | — | Serve one capture; `source` is `buffer` or `archive` |
 | `GET` | `/storage` | — | Offload status — mount state, buffer usage, upload/failure/dropped counts |
 | `POST` | `/move` | `{"direction": "up"\|"down"\|"left"\|"right", "step": 5}` | Move one step — `409` with no HAT |
-| `POST` | `/goto` | `{"pan": 30, "tilt": -10}` | Jump to absolute position |
-| `POST` | `/home` | — | Return to startup position |
+| `POST` | `/goto` | `{"pan": 30, "tilt": -10}` | Travel to an absolute position, eased at `GOTO_SPEED`. Returns the **target** plus `gliding`; the move continues after the response and progress arrives over `/events` |
+| `POST` | `/home` | — | Travel to the startup position, eased like `/goto` |
 | `POST` | `/scan` | `{"enabled": true\|false}` | Start or stop auto-scan |
 | `GET` | `/presets` | — | All saved presets |
 | `POST` | `/presets` | `{"name": "door"}` | Save current position as a preset |
@@ -305,11 +307,24 @@ All routes except `/login`, `/logout`, `/manifest.json`, `/sw.js`, `/motion-even
 
 Edit `motion.env` and re-run `sudo ./install.sh` to apply changes.
 
-`motion.env` is the only file you are expected to edit, and on a real install it holds
-values specific to that machine — NFS server and export, camera name, credentials. Those
-are normally left uncommitted, so **do not copy a checkout's `motion.env` over a
-configured one**: it reverts `NFS_ENABLED` to `false` and blanks the server details, which
-presents as the NAS having disappeared.
+### Machine-specific settings
+
+`motion.env` holds the tracked defaults. Anything specific to one machine goes in
+**`motion.env.local`**, which is gitignored and overrides `motion.env` key by key:
+
+```bash
+cat > motion.env.local <<'EOF'
+NFS_ENABLED=true
+NFS_SERVER=192.168.1.10
+NFS_EXPORT=/srv/cameras
+CAMERA_NAME=frontdoor
+EOF
+sudo ./install.sh
+```
+
+The installer prints which files it read. Only the keys you list are overridden, so the
+overlay stays small, and `motion.env` can be updated from the repo without touching your
+configuration. `--dry-run` shows the merged result before anything is applied.
 
 ### Pan/tilt
 
@@ -323,6 +338,7 @@ presents as the NAS having disappeared.
 | `TILT_MIN` | `-90` | Soft down limit |
 | `TILT_MAX` | `90` | Soft up limit |
 | `SCAN_SPEED` | `0.4` | Auto-scan sweep speed in rad/s (`0.4` ≈ 8 s side-to-side, `0.2` ≈ 16 s) |
+| `GOTO_SPEED` | `45` | Travel speed to a preset or Home, in degrees/second. `20` is slow and deliberate, `120` brisk, `0` disables easing. See below. |
 
 ### Authentication
 
@@ -348,7 +364,8 @@ presents as the NAS having disappeared.
 | `UPLOAD_SWEEP_INTERVAL` | `30` | Seconds between buffer rescans |
 | `UPLOAD_RETRY_MIN` | `5` | Initial retry backoff in seconds |
 | `UPLOAD_RETRY_MAX` | `300` | Maximum retry backoff in seconds |
-| `GALLERY_LIMIT` | `200` | Most recent captures the gallery lists |
+| `GALLERY_LIMIT` | `50` | Captures per gallery page (the UI pages with **Load more**) |
+| `BULK_MAX` | `500` | Most captures one delete or zip download may name at once |
 
 ### Camera / motion
 
