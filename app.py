@@ -40,7 +40,11 @@ if TILT_MIN >= TILT_MAX: TILT_MIN, TILT_MAX = -90, 90
 DEFAULT_STEP = 5
 PRESETS_FILE      = Path(os.environ.get("PRESETS_FILE", "/opt/picam/presets.json"))
 MOTION_TARGET_DIR = Path(os.environ.get("MOTION_TARGET_DIR", "/var/lib/motion"))
-GALLERY_LIMIT     = max(1, int(os.environ.get("GALLERY_LIMIT", 200)))
+GALLERY_LIMIT     = max(1, int(os.environ.get("GALLERY_LIMIT", 50)))
+# How many captures one delete or download may name. Deliberately separate from
+# GALLERY_LIMIT: that is a page size, and someone can load several pages before
+# selecting, so tying the two together would cap bulk actions at one page.
+BULK_MAX          = max(1, int(os.environ.get("BULK_MAX", 500)))
 # Cap on a single zip bundle, so select-all cannot fill the SD card
 ZIP_MAX_BYTES     = max(1, int(os.environ.get("ZIP_MAX_MB", 512))) * 1024 * 1024
 
@@ -216,11 +220,70 @@ def _set_scan(enabled):
     global scan_active, _scan_thread
     if not HARDWARE:
         return          # nothing to sweep; the thread would burn CPU and SSE for nothing
+    if enabled:
+        _cancel_glide()     # the sweep and a travelling preset would fight over the servo
     with _scan_lock:
         scan_active = enabled
         if enabled and (_scan_thread is None or not _scan_thread.is_alive()):
             _scan_thread = threading.Thread(target=_scan_worker, daemon=True)
             _scan_thread.start()
+
+# ── Eased absolute moves ───────────────────────────────────────────────────────
+
+# Degrees per second for a jump to an absolute position — a preset or Home.
+# A bare pantilthat.pan() call slews the servo at full speed, and the jolt is
+# enough to walk the whole rig across a table. Stepping the angle bounds the
+# angular velocity instead. 0 disables the easing and jumps straight there.
+GOTO_SPEED    = max(0.0, float(os.environ.get("GOTO_SPEED", "45")))
+GLIDE_INTERVAL = 0.02          # 50 Hz; step size falls out of the speed
+
+_glide_lock = threading.Lock()
+_glide_seq  = 0                # bumped to retire whatever glide is in flight
+
+
+def _cancel_glide():
+    """Retire any glide in progress. The worker notices by its sequence number."""
+    global _glide_seq
+    with _glide_lock:
+        _glide_seq += 1
+        return _glide_seq
+
+
+def _glide_worker(target_pan, target_tilt, seq):
+    step = max(1, int(round(GOTO_SPEED * GLIDE_INTERVAL)))
+    while True:
+        with _glide_lock:
+            if seq != _glide_seq:
+                return                  # a newer move superseded this one
+        with lock:
+            cur_pan, cur_tilt = state["pan"], state["tilt"]
+            nxt_pan  = clamp(cur_pan  + max(-step, min(step, target_pan  - cur_pan)),
+                             PAN_MIN,  PAN_MAX)
+            nxt_tilt = clamp(cur_tilt + max(-step, min(step, target_tilt - cur_tilt)),
+                             TILT_MIN, TILT_MAX)
+            # No change means either arrived or a soft limit blocks the rest —
+            # either way there is nothing left to do, so this always terminates.
+            if (nxt_pan, nxt_tilt) == (cur_pan, cur_tilt):
+                return
+            _apply(nxt_pan, nxt_tilt)
+        time.sleep(GLIDE_INTERVAL)
+
+
+def _goto(pan, tilt):
+    """Move to an absolute position, eased unless GOTO_SPEED is 0.
+
+    Returns immediately: the stepping runs on its own thread so the request is
+    not held open for the length of the travel, and the UI follows along over
+    SSE because every step goes through _apply().
+    """
+    seq = _cancel_glide()
+    if GOTO_SPEED <= 0 or not HARDWARE:
+        with lock:
+            _apply(pan, tilt)
+        return False
+    threading.Thread(target=_glide_worker, args=(pan, tilt, seq),
+                     daemon=True, name="glide").start()
+    return True
 
 # ── Presets ────────────────────────────────────────────────────────────────────
 
@@ -352,6 +415,7 @@ def position():
             "hardware": HARDWARE,          # kept for older clients
             "pantilt":  _pantilt_state(),
             "scan":     scan_active,
+            "goto_speed": GOTO_SPEED,
         })
 
 
@@ -370,6 +434,7 @@ def scan():
 def move():
     global scan_active
     scan_active = False          # any manual move cancels the scan
+    _cancel_glide()              # ...and overrides a preset still travelling
     data      = request.json
     direction = data.get("direction")
     step      = clamp(int(data.get("step", DEFAULT_STEP)), 1, 90)
@@ -396,9 +461,10 @@ def goto():
     data = request.json
     pan  = clamp(int(data.get("pan",  state["pan"])),  PAN_MIN,  PAN_MAX)
     tilt = clamp(int(data.get("tilt", state["tilt"])), TILT_MIN, TILT_MAX)
-    with lock:
-        _apply(pan, tilt)
-        return jsonify(state)
+    gliding = _goto(pan, tilt)
+    # The target, not the current angle: with easing on, the camera is still on
+    # its way. Live position keeps arriving over SSE.
+    return jsonify({"pan": pan, "tilt": tilt, "gliding": gliding})
 
 
 @app.route("/home", methods=["POST"])
@@ -407,9 +473,8 @@ def goto():
 def home():
     global scan_active
     scan_active = False
-    with lock:
-        _apply(_pan_start, _tilt_start)
-        return jsonify(state)
+    gliding = _goto(_pan_start, _tilt_start)
+    return jsonify({"pan": _pan_start, "tilt": _tilt_start, "gliding": gliding})
 
 
 @app.route("/presets", methods=["GET"])
@@ -592,20 +657,49 @@ def _subdirs(path):
         return []
 
 
-def _archive_entries(root, limit):
+def _sort_key(entry):
+    """Newest first, then path, giving a total order with no ties."""
+    return (-entry["ts"], entry["path"])
+
+
+def _after_cursor(entry, cursor):
+    """True when `entry` falls strictly after `cursor` in _sort_key order."""
+    if cursor is None:
+        return True
+    ts, path = cursor
+    return entry["ts"] < ts or (entry["ts"] == ts and entry["path"] > path)
+
+
+def _archive_entries(root, limit, cursor=None):
     """Captures from the newest YYYY/MM/DD directories only.
 
     The archive grows forever, so a full recursive walk would get slower every
     day. Descending newest-first and stopping at `limit` keeps the cost flat.
+
+    When paging, the cursor's date also lets whole day directories newer than it
+    be skipped by name, without listing them. Without that, every page would
+    re-list all the days it had already returned and paging deep into the
+    archive would cost O(pages²) directory reads.
     """
+    cutoff = None
+    if cursor is not None:
+        cutoff = tuple(datetime.fromtimestamp(cursor[0]).strftime("%Y/%m/%d").split("/"))
+
     out = []
     for year in _subdirs(root):
+        if cutoff and (year.name,) > cutoff[:1]:
+            continue
         for month in _subdirs(year):
+            if cutoff and (year.name, month.name) > cutoff[:2]:
+                continue
             for day in _subdirs(month):
+                if cutoff and (year.name, month.name, day.name) > cutoff:
+                    continue
                 try:
-                    found = [_entry(f, root, "archive")
-                             for f in day.iterdir()
-                             if f.is_file() and uploader.kind_for(f)]
+                    found = [e for e in (_entry(f, root, "archive")
+                                         for f in day.iterdir()
+                                         if f.is_file() and uploader.kind_for(f))
+                             if _after_cursor(e, cursor)]
                 except OSError:
                     continue
                 out.extend(found)
@@ -617,6 +711,21 @@ def _archive_entries(root, limit):
 @app.route("/gallery")
 @login_required
 def gallery_list():
+    """One page of captures, newest first.
+
+    Paging is by cursor, not offset: `before`/`before_path` carry the last entry
+    of the previous page. Captures arrive and get deleted while someone browses,
+    so an offset would silently skip or repeat rows as the list shifts under it.
+    """
+    limit = clamp(int(request.args.get("limit") or GALLERY_LIMIT), 1, GALLERY_LIMIT)
+
+    cursor = None
+    if request.args.get("before"):
+        try:
+            cursor = (int(request.args["before"]), request.args.get("before_path", ""))
+        except ValueError:
+            return jsonify({"error": "bad cursor"}), 400
+
     entries = []
     roots   = _gallery_roots()
 
@@ -625,18 +734,25 @@ def gallery_list():
         try:
             for f in buffer_root.rglob("*"):
                 if f.is_file() and uploader.kind_for(f):
-                    entries.append(_entry(f, buffer_root, "buffer"))
+                    e = _entry(f, buffer_root, "buffer")
+                    if _after_cursor(e, cursor):
+                        entries.append(e)
         except OSError:
             app.logger.exception("buffer scan failed")
 
     if "archive" in roots:
         try:
-            entries.extend(_archive_entries(roots["archive"], GALLERY_LIMIT))
+            # One extra, so "is there another page" needs no second query
+            entries.extend(_archive_entries(roots["archive"], limit + 1, cursor))
         except OSError:
             app.logger.exception("archive scan failed")
 
-    entries.sort(key=lambda e: e["ts"], reverse=True)
-    return jsonify(entries[:GALLERY_LIMIT])
+    entries.sort(key=_sort_key)
+    page = entries[:limit]
+    nxt  = None
+    if len(entries) > limit and page:
+        nxt = {"before": page[-1]["ts"], "before_path": page[-1]["path"]}
+    return jsonify({"entries": page, "next": nxt})
 
 
 def _prune_empty_dirs(start, stop):
@@ -700,8 +816,8 @@ def gallery_delete():
     paths = (request.get_json(silent=True) or {}).get("paths")
     if not isinstance(paths, list) or not paths:
         return jsonify({"error": "paths required"}), 400
-    if len(paths) > GALLERY_LIMIT:
-        return jsonify({"error": f"at most {GALLERY_LIMIT} at a time"}), 400
+    if len(paths) > BULK_MAX:
+        return jsonify({"error": f"at most {BULK_MAX} at a time"}), 400
 
     roots = _gallery_roots()
     deleted, failed = [], []
@@ -744,8 +860,8 @@ def gallery_download():
     rels = request.form.getlist("path")
     if not rels:
         return "no paths given", 400
-    if len(rels) > GALLERY_LIMIT:
-        return f"at most {GALLERY_LIMIT} at a time", 400
+    if len(rels) > BULK_MAX:
+        return f"at most {BULK_MAX} at a time", 400
 
     targets, total = [], 0
     for rel in rels:

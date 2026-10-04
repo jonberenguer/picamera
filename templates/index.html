@@ -170,6 +170,21 @@
   <div class="gallery-viewer" id="gallery-viewer">
     <img id="gallery-viewer-img" src="" alt="">
     <video id="gallery-viewer-video" controls playsinline style="display:none"></video>
+    <!-- Hints only. The click is handled on the viewer itself so these never sit
+         over the image and block long-press-to-save. -->
+    <div class="viewer-nav prev" id="viewer-prev" aria-hidden="true">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <path d="M15 18l-6-6 6-6"/>
+      </svg>
+    </div>
+    <div class="viewer-nav next" id="viewer-next" aria-hidden="true">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <path d="M9 6l6 6-6 6"/>
+      </svg>
+    </div>
+  </div>
+  <div class="gallery-more" id="gallery-more">
+    <button class="sel-btn" id="gallery-more-btn">Load more</button>
   </div>
   <div class="gallery-actions" id="gallery-actions">
     <span class="sel-count" id="sel-count">none selected</span>

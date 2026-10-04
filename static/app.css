@@ -434,7 +434,15 @@ body.no-pantilt #home-btn { display: none !important; }
 }
 
 .gallery-grid {
-  flex: 1; overflow-y: auto;
+  flex: 1;
+  /* 'scroll' with a stable gutter rather than 'auto': tiles are sized by
+     aspect-ratio, so their height follows their width. With 'auto' the
+     scrollbar appears partway through loading a page of lazy images, which
+     narrows the grid, which changes the column width, which changes every row
+     height — a reflow loop that can leave tiles visibly mis-drawn while it
+     settles. Reserving the gutter keeps the width constant from the start. */
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
   padding: 14px;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
@@ -564,3 +572,42 @@ body.no-pantilt #home-btn { display: none !important; }
 .sel-btn:hover           { border-color: var(--accent); color: var(--accent); }
 .sel-btn.danger:hover    { border-color: var(--danger); color: var(--danger); }
 .sel-btn:disabled        { opacity: 0.3; cursor: default; pointer-events: none; }
+
+/* ── Gallery paging ──────────────────────────────────────────────────────── */
+.gallery-more {
+  display: none;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 9px 14px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+}
+.gallery-more.open { display: flex; }
+
+/* ── Preview navigation ──────────────────────────────────────────────────── */
+/* Clicking the left or right half of a still steps through the gallery. The
+   chevrons are pointer-events:none so they are purely a hint — the viewer owns
+   the click, which keeps the image itself unobstructed (long-press to save on
+   touch still works) and means the whole half is a target, not just the icon. */
+.gallery-viewer { position: relative; }
+.gallery-viewer.navigable { cursor: pointer; }
+
+.viewer-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 34px; height: 34px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  background: rgba(22,22,22,0.6);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s, color 0.15s;
+  backdrop-filter: blur(4px);
+}
+.viewer-nav.prev { left: 12px; }
+.viewer-nav.next { right: 12px; }
+.viewer-nav.show { opacity: 0.5; }
+.gallery-viewer:hover .viewer-nav.show { opacity: 1; color: var(--text); }

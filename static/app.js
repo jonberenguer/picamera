@@ -199,7 +199,9 @@ document.querySelectorAll('.step-btn').forEach(btn => {
 const keyMap = { ArrowUp:'up', ArrowDown:'down', ArrowLeft:'left', ArrowRight:'right' };
 
 document.addEventListener('keydown', e => {
-  if (!panTiltAvailable) return;
+  // The gallery owns the arrows and Escape while it is open, or paging through
+  // captures would pan the camera at the same time.
+  if (!panTiltAvailable || galleryOpen()) return;
   if (e.key === 'Escape') {
     if (scanActive) {
       setScanUI(false);
@@ -215,7 +217,7 @@ document.addEventListener('keydown', e => {
 });
 
 document.addEventListener('keyup', e => {
-  if (!panTiltAvailable) return;
+  if (!panTiltAvailable || galleryOpen()) return;
   if (keyMap[e.key]) stopHold();
 });
 
@@ -318,6 +320,7 @@ feedWrap.addEventListener('touchend', () => { pinchDist0 = null; });
 // ── Gallery ───────────────────────────────────────────────────────────────
 let galleryFiles = [];
 let selectMode   = false;
+let nextCursor   = null;   // {before, before_path} from the server, or null at the end
 const selected   = new Set();   // capture paths, not indices: survives a reload
 
 const CHECK_ICON = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5"><polyline points="20 6 9 17 4 12"/></svg>`;
@@ -330,7 +333,17 @@ const esc = v => String(v).replace(/[&<>"']/g, c =>
 // Paths are "<source>/<relative path>" — encode each segment, keep the slashes
 const mediaUrl = path => '/gallery/' + path.split('/').map(encodeURIComponent).join('/');
 
-let currentItem = null;
+let currentItem  = null;
+let currentIndex = -1;
+
+function galleryOpen() {
+  return document.getElementById('gallery-overlay').classList.contains('open');
+}
+
+function viewerOpen() {
+  return galleryOpen() &&
+         document.getElementById('gallery-viewer').style.display === 'flex';
+}
 
 function openGallery() {
   setSelectMode(false);
@@ -343,19 +356,56 @@ function closeGallery() {
   document.getElementById('gallery-overlay').classList.remove('open');
 }
 
+// Always restarts at the newest page. A delete calls this, so the grid resets
+// rather than trying to stitch a changed archive back together.
 async function loadGallery() {
   try {
     const res = await fetch('/gallery');
     if (!res.ok) return;
-    galleryFiles = await res.json();
+    const data   = await res.json();
+    galleryFiles = data.entries || [];
+    nextCursor   = data.next || null;
     renderGalleryGrid();
   } catch (_) {}
 }
 
+async function loadMoreGallery() {
+  if (!nextCursor) return;
+  const btn = document.getElementById('gallery-more-btn');
+  btn.disabled = true;
+  btn.textContent = 'Loading…';
+  try {
+    const q = new URLSearchParams({ before: nextCursor.before,
+                                    before_path: nextCursor.before_path });
+    const res = await fetch('/gallery?' + q);
+    if (res.ok) {
+      const data = await res.json();
+      // The cursor makes overlap unlikely, but a capture archived between pages
+      // could still land twice; keying by path makes appending idempotent.
+      const have = new Set(galleryFiles.map(f => f.path));
+      galleryFiles = galleryFiles.concat((data.entries || []).filter(f => !have.has(f.path)));
+      nextCursor = data.next || null;
+      renderGalleryGrid();
+    }
+  } catch (_) {}
+  btn.disabled = false;
+  btn.textContent = 'Load more';
+}
+
+document.getElementById('gallery-more-btn').addEventListener('click', loadMoreGallery);
+
 function renderGalleryGrid() {
   const grid  = document.getElementById('gallery-grid');
   const empty = document.getElementById('gallery-empty');
-  document.getElementById('gallery-hdr-title').textContent = `Gallery (${galleryFiles.length})`;
+  // Navigating the preview can pull in another page, which re-renders the grid
+  // underneath. Leave the header and the Load more bar alone while previewing,
+  // or the filename gets replaced by the count and the bar reappears.
+  if (!viewerOpen()) {
+    // "+" means more pages exist, so the number is what is loaded, not the total
+    document.getElementById('gallery-hdr-title').textContent =
+      `Gallery (${galleryFiles.length}${nextCursor ? '+' : ''})`;
+    document.getElementById('gallery-more').classList.toggle('open', !!nextCursor);
+  }
   if (galleryFiles.length === 0) {
     grid.style.display  = 'none';
     empty.style.display = 'flex';
@@ -477,8 +527,14 @@ document.getElementById('sel-del-btn').addEventListener('click',
   () => deletePaths([...selected]));
 
 function showGalleryGrid() {
+  currentItem  = null;
+  currentIndex = -1;
+  document.getElementById('viewer-prev').classList.remove('show');
+  document.getElementById('viewer-next').classList.remove('show');
+  document.getElementById('gallery-viewer').classList.remove('navigable');
   document.getElementById('gallery-del-btn').style.display = 'none';
   document.getElementById('gallery-select-btn').style.display = '';
+  document.getElementById('gallery-more').classList.toggle('open', !!nextCursor);
   const video = document.getElementById('gallery-viewer-video');
   video.pause();
   video.removeAttribute('src');
@@ -488,16 +544,19 @@ function showGalleryGrid() {
   document.getElementById('gallery-viewer').style.display  = 'none';
   document.getElementById('gallery-back-btn').style.display = 'none';
   document.getElementById('gallery-dl-btn').style.display   = 'none';
-  document.getElementById('gallery-hdr-title').textContent  = `Gallery (${galleryFiles.length})`;
+  document.getElementById('gallery-hdr-title').textContent =
+    `Gallery (${galleryFiles.length}${nextCursor ? '+' : ''})`;
 }
 
 function showGalleryItem(idx) {
   const f = galleryFiles[idx];
   if (!f) return;
-  currentItem = f;
+  currentItem  = f;
+  currentIndex = idx;
   const url   = mediaUrl(f.path);
-  // Selecting is a grid-level action; hide the toggle while previewing one item
+  // Selecting and paging are grid-level actions; hide both while previewing
   document.getElementById('gallery-select-btn').style.display = 'none';
+  document.getElementById('gallery-more').classList.remove('open');
   document.getElementById('gallery-del-btn').style.display = '';
   const img   = document.getElementById('gallery-viewer-img');
   const video = document.getElementById('gallery-viewer-video');
@@ -511,6 +570,8 @@ function showGalleryItem(idx) {
   dl.href = url;
   dl.setAttribute('download', f.name);
   document.getElementById('gallery-hdr-title').textContent = f.name;
+
+  updateViewerNav();
 
   if (f.kind === 'video') {
     img.removeAttribute('src');
@@ -526,6 +587,33 @@ function showGalleryItem(idx) {
   }
 }
 
+// Step through the loaded captures. Running off the end pulls the next page in
+// rather than dead-ending, so the preview follows the same list as the grid.
+async function navigateViewer(delta) {
+  if (currentIndex < 0) return;
+  const target = currentIndex + delta;
+  if (target >= galleryFiles.length && nextCursor) await loadMoreGallery();
+  if (target < 0 || target >= galleryFiles.length) return;
+  showGalleryItem(target);
+}
+
+function updateViewerNav() {
+  const isImage = !!currentItem && currentItem.kind === 'image';
+  const hasPrev = isImage && currentIndex > 0;
+  const hasNext = isImage && (currentIndex < galleryFiles.length - 1 || !!nextCursor);
+  document.getElementById('viewer-prev').classList.toggle('show', hasPrev);
+  document.getElementById('viewer-next').classList.toggle('show', hasNext);
+  document.getElementById('gallery-viewer')
+          .classList.toggle('navigable', hasPrev || hasNext);
+}
+
+document.getElementById('gallery-viewer').addEventListener('click', e => {
+  // Stills only: a video's own controls must keep every click inside the player.
+  if (!currentItem || currentItem.kind !== 'image') return;
+  const box = e.currentTarget.getBoundingClientRect();
+  navigateViewer(e.clientX - box.left < box.width / 2 ? -1 : 1);
+});
+
 document.getElementById('gallery-del-btn').addEventListener('click', async () => {
   if (!currentItem) return;
   const path = currentItem.path;
@@ -537,8 +625,19 @@ document.getElementById('gallery-del-btn').addEventListener('click', async () =>
 document.getElementById('gallery-btn').addEventListener('click', openGallery);
 document.getElementById('gallery-close-btn').addEventListener('click', closeGallery);
 document.getElementById('gallery-back-btn').addEventListener('click', showGalleryGrid);
-document.getElementById('gallery-overlay').addEventListener('keydown', e => {
-  if (e.key === 'Escape') closeGallery();
+// This used to be bound to the overlay <div>, which is not focusable and so
+// never received a keydown — Escape silently did nothing. Document level, and
+// gated on the gallery being open so the camera keys are unaffected when it is not.
+document.addEventListener('keydown', e => {
+  if (!galleryOpen()) return;
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    if (viewerOpen()) showGalleryGrid(); else closeGallery();
+    return;
+  }
+  if (!viewerOpen()) return;
+  if (e.key === 'ArrowLeft')  { e.preventDefault(); navigateViewer(-1); }
+  if (e.key === 'ArrowRight') { e.preventDefault(); navigateViewer(1); }
 });
 
 // ── Presets (4 fixed slots) ───────────────────────────────────────────────
