@@ -40,7 +40,7 @@ def check(l, ok, extra=""):
     print(f"{'PASS' if ok else 'FAIL'}  {l} {extra}")
     if not ok: fails.append(l)
 
-def names(): return sorted(e["name"] for e in c.get("/gallery").get_json())
+def names(): return sorted(e["name"] for e in c.get("/gallery").get_json()["entries"])
 check("gallery lists 4", names() == ["a.jpg","b.jpg","clip.mkv","pending.jpg"], f"{names()}")
 
 # ── delete: refusals ─────────────────────────────────────────────────────────
@@ -51,7 +51,7 @@ for body, label in [
 ]:
     check(f"delete rejects {label}", c.post("/gallery-delete", json=body).status_code == 400)
 check("delete rejects over the cap",
-      c.post("/gallery-delete", json={"paths": ["x"]*(picam.GALLERY_LIMIT+1)}).status_code == 400)
+      c.post("/gallery-delete", json={"paths": ["x"]*(picam.BULK_MAX+1)}).status_code == 400)
 
 # ── delete: traversal must not escape ────────────────────────────────────────
 evil = ["archive/../secret.txt", "archive/../../outside.jpg", "buffer/../../outside.jpg",
