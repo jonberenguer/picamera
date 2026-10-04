@@ -3,3 +3,4 @@ __pycache__/
 venv/
 presets.json
 .testvenv/
+motion.env.local

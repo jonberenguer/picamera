@@ -5,6 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR=/opt/picam
 MANIFEST=/etc/picam.manifest
 MOTION_CONF=/etc/motion/motion.conf
+ENV_FILE=motion.env
+LOCAL_ENV_FILE=motion.env.local
 CADDY_CONF=/etc/caddy/Caddyfile
 NFS_CONFIGURED=false
 
@@ -35,6 +37,33 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
+
+# ── Configuration files ────────────────────────────────────────────────────────
+# motion.env is the tracked set of defaults. motion.env.local is optional,
+# gitignored, and holds whatever is specific to THIS machine — NFS server,
+# camera name, credentials. Later files win, so a single key in the local file
+# overrides just that key.
+#
+# This exists because copying a checkout's motion.env over a configured install
+# silently reverted NFS_ENABLED to false and blanked the server address, and the
+# result looked like the NAS had gone away. With the overlay, motion.env can be
+# deployed freely and the machine's own settings are never in its path.
+ENV_FILES=()
+env_files() {
+    ENV_FILES=()
+    [[ -f "$SCRIPT_DIR/$ENV_FILE" ]] && ENV_FILES+=("$SCRIPT_DIR/$ENV_FILE")
+    [[ -f "$SCRIPT_DIR/$LOCAL_ENV_FILE" ]] && ENV_FILES+=("$SCRIPT_DIR/$LOCAL_ENV_FILE")
+    (( ${#ENV_FILES[@]} )) || { echo "ERROR: no $ENV_FILE in $SCRIPT_DIR" >&2; exit 1; }
+}
+
+# Last assignment of a key wins, and only one line per key is emitted.
+merged_env() {
+    cat "${ENV_FILES[@]}" | sed 's/[[:space:]]*$//' | awk -F= '
+        /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+        { if (!($1 in seen)) { order[++n] = $1; seen[$1] = 1 }  # keep first-seen order
+          line[$1] = $0 }                                       # but the last value
+        END { for (i = 1; i <= n; i++) print line[order[i]] }'
+}
 
 # ── Execution helpers ──────────────────────────────────────────────────────────
 # Every mutating command goes through one of these, so --dry-run is a property of
@@ -203,9 +232,11 @@ if $DRY_RUN; then
     say ""
 fi
 
-# Needed before the package step, but motion.env is not parsed until later
-PANTILT_ENABLED=$(grep -E "^PANTILT_ENABLED=" "$SCRIPT_DIR/motion.env" \
-    | tail -1 | cut -d= -f2 | tr -d '[:space:]' | tr 'A-Z' 'a-z')
+# Needed before the package step, but the env files are not parsed until later
+env_files
+say "==> Configuration: $(basename "${ENV_FILES[0]}")$( (( ${#ENV_FILES[@]} > 1 )) && echo " + $(basename "${ENV_FILES[1]}") (overrides)")"
+PANTILT_ENABLED=$(merged_env | grep -E "^PANTILT_ENABLED=" \
+    | cut -d= -f2 | tr -d '[:space:]' | tr 'A-Z' 'a-z')
 PANTILT_ENABLED="${PANTILT_ENABLED:-auto}"
 if [[ "$PANTILT_ENABLED" == "off" ]]; then
     say "==> Pan/tilt disabled — installing without I2C support"
@@ -269,14 +300,14 @@ fi
 
 say "==> Configuring motion..."
 
-# Load env file, skip comments and blank lines
+# Load the merged settings, skipping comments and blank lines
 while IFS='=' read -r key value; do
     [[ "$key" =~ ^#.*$ || -z "$key" ]] && continue
     key="${key// /}"
     value="${value%%#*}"    # strip inline comments
     value="${value// /}"
     printf -v "$key" '%s' "$value"
-done < "$SCRIPT_DIR/motion.env"
+done < <(merged_env)
 
 if [[ ! -f "$MOTION_CONF" ]]; then
     if $DRY_RUN; then
@@ -320,8 +351,8 @@ say "==> Writing /etc/picam.env..."
 # Preserve SECRET_KEY across re-runs so existing sessions stay valid
 EXISTING_SECRET=$(grep "^SECRET_KEY=" /etc/picam.env 2>/dev/null || true)
 # Any setting app.py reads must be listed here, or it silently keeps its default
-FLASK_VARS="PAN_START|TILT_START|PAN_MIN|PAN_MAX|TILT_MIN|TILT_MAX|SCAN_SPEED\
-|AUTH_USER|AUTH_PASS|MOTION_TARGET_DIR|GALLERY_LIMIT|PANTILT_ENABLED|LOG_LEVEL|ZIP_MAX_MB\
+FLASK_VARS="PAN_START|TILT_START|PAN_MIN|PAN_MAX|TILT_MIN|TILT_MAX|SCAN_SPEED|GOTO_SPEED\
+|AUTH_USER|AUTH_PASS|MOTION_TARGET_DIR|GALLERY_LIMIT|PANTILT_ENABLED|LOG_LEVEL|ZIP_MAX_MB|BULK_MAX\
 |NFS_ENABLED|NFS_MOUNT|NFS_SUBDIR|CAMERA_NAME|BUFFER_HIGH_WATER\
 |UPLOAD_STABLE_AGE|UPLOAD_SWEEP_INTERVAL|UPLOAD_RETRY_MIN|UPLOAD_RETRY_MAX"
 if [[ -n "$EXISTING_SECRET" ]]; then
@@ -331,7 +362,7 @@ else
 fi
 # Holds AUTH_PASS and SECRET_KEY in the clear — never world-readable
 {
-    grep -E "^(${FLASK_VARS})=" "$SCRIPT_DIR/motion.env" | sed 's/[[:space:]]*$//' || true
+    merged_env | grep -E "^(${FLASK_VARS})=" || true
     if $DRY_RUN; then echo "SECRET_KEY=<generated, or preserved from the existing file>"
     else echo "$PICAM_SECRET"; fi
 } | write_file /etc/picam.env 0600
@@ -483,7 +514,12 @@ if [[ "$NFS_CONFIGURED" == true ]]; then
     say "  NFS archive     : ${NFS_SERVER}:${NFS_EXPORT} -> ${NFS_MOUNT}/${NFS_SUBDIR}/${CAMERA_NAME:-$(hostname)}"
     say "                    check status at https://${PI_IP}/storage"
 else
-    say "  NFS archive     : disabled (set NFS_ENABLED=true in motion.env)"
+    say "  NFS archive     : disabled (set NFS_ENABLED=true in ${LOCAL_ENV_FILE})"
+fi
+if (( ${#ENV_FILES[@]} > 1 )); then
+    say "  Settings        : ${ENV_FILE} + ${LOCAL_ENV_FILE} (machine-specific overrides)"
+else
+    say "  Settings        : ${ENV_FILE} only — put machine-specific values in ${LOCAL_ENV_FILE}"
 fi
 say "  Uninstall       : sudo ./install.sh --uninstall"
 if [[ "$REBOOT_REQUIRED" == true ]]; then
